@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Skeleton shimmer */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
@@ -14,17 +15,35 @@
 .dark .skeleton-box {
   background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
   background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
 }
+
+/* Page fade-in */
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .page-enter { animation: fadeUp 0.2s ease-out both; }
+
+/* Toast slide-in */
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(60px); }
   to   { opacity: 1; transform: translateX(0); }
 }
 .toast-enter { animation: slideIn 0.25s ease-out both; }
-*:focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; border-radius: 6px; }
-*, *::before, *::after { transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease; }
-.skeleton-box, .page-enter, .toast-enter { transition: none !important; }
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid #7c3aed;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Smooth transitions for dark mode */
+*, *::before, *::after {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+/* But not on animated elements */
+.skeleton-box, [class*="animate-"], .page-enter, .toast-enter {
+  transition: none !important;
+}
