@@ -1601,12 +1601,504 @@ function AppShell() {
   );
 }
 
+function RootRouter() {
+  const [screen, setScreen] = useState("landing");
+  const [pendingRole, setPendingRole] = useState(null);
+
+  const screens = {
+    landing: <LandingPage
+      onGetStarted={()=>setScreen("university")}
+      onPricing={()=>setScreen("pricing")}
+      onPrivacy={()=>setScreen("privacy")}
+      onTerms={()=>setScreen("terms")}
+    />,
+    pricing: <PricingPage onBack={()=>setScreen("landing")} onGetStarted={()=>setScreen("university")}/>,
+    privacy: <PrivacyPage onBack={()=>setScreen("landing")}/>,
+    terms: <TermsPage onBack={()=>setScreen("landing")}/>,
+    onboarding: <OnboardingFlow role={pendingRole||"student"} onDone={()=>setScreen("app")}/>,
+    university: <AppShell
+      forceScreen="university"
+      onAuthDone={(role)=>{setPendingRole(role);setScreen("onboarding");}}
+      onGuest={()=>setScreen("app")}
+      onBack={()=>setScreen("landing")}
+    />,
+    app: <AppShell
+      forceScreen="app"
+      initialRole={pendingRole}
+      onAuthDone={(role)=>{setPendingRole(role);setScreen("onboarding");}}
+      onGuest={()=>setScreen("app")}
+      onBack={()=>setScreen("landing")}
+    />,
+  };
+  return screens[screen] || screens.landing;
+}
+
 export default function App() {
   const [isDark, setIsDark] = useState(()=>{try{return localStorage.getItem("cs-theme")==="dark"||(!localStorage.getItem("cs-theme")&&window.matchMedia("(prefers-color-scheme: dark)").matches);}catch{return false;}});
   const toggle = useCallback(()=>{setIsDark(d=>{const next=!d;try{localStorage.setItem("cs-theme",next?"dark":"light");}catch{}return next;});},[]);
   return (
     <ThemeCtx.Provider value={{isDark,toggle}}>
-      <ToastProvider><AppShell/></ToastProvider>
+      <ToastProvider><RootRouter/></ToastProvider>
     </ThemeCtx.Provider>
+  );
+}
+
+// ─── BATCH 3: LANDING, PRICING, PRIVACY, TERMS, ONBOARDING ───────────────────
+
+function LandingPage({ onGetStarted, onPricing, onPrivacy, onTerms }) {
+  const { isDark, toggle } = useTheme();
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const features = [
+    { role: "Students", emoji: "🎓", color: "from-violet-500 to-indigo-600", items: ["Browse all university clubs", "Register for events in one tap", "Get QR tickets & certificates", "Follow clubs for updates", "Track all your applications"] },
+    { role: "Club Admins", emoji: "🏆", color: "from-amber-500 to-orange-500", items: ["Create & manage events", "Auto-approve registrations", "Mark attendance digitally", "Post announcements to followers", "Export data as CSV"] },
+    { role: "Faculty", emoji: "🎯", color: "from-emerald-500 to-teal-600", items: ["Approve events with one click", "Full audit trail of decisions", "View all registrations", "Update club descriptions", "Platform-level oversight"] },
+  ];
+  const steps = [
+    { n: "1", title: "University selects ClubSphere", desc: "We onboard your university in under 24 hours. All clubs, events, and students migrated seamlessly.", emoji: "🏛️" },
+    { n: "2", title: "Students sign up via OTP", desc: "Students log in with their college email or phone number — no passwords, no friction.", emoji: "📱" },
+    { n: "3", title: "Clubs go live immediately", desc: "Club admins create events, students register, faculty approve. Everything in one place.", emoji: "🚀" },
+  ];
+  const testimonials = [
+    { name: "Aryan Gupta", role: "Student, Amity University", quote: "I used to miss events because I didn't know about them. ClubSphere changed that completely.", avatar: "A" },
+    { name: "Vikram Nair", role: "President, Tech Society", quote: "Managing 200 registrations used to take days. Now it's automatic and I can focus on the event itself.", avatar: "V" },
+    { name: "Dr. Priya Kapoor", role: "Faculty Coordinator", quote: "The audit trail alone is worth it. I can track every decision I've made across all club events.", avatar: "P" },
+  ];
+  const stats = [
+    { value: "4+", label: "Universities" },
+    { value: "115+", label: "Active Clubs" },
+    { value: "12K+", label: "Students" },
+    { value: "225+", label: "Events / Month" },
+  ];
+
+  return (
+    <div className={`min-h-screen ${isDark ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
+      {/* Nav */}
+      <nav className="sticky top-0 z-50 backdrop-blur-md bg-white/90 dark:bg-slate-950/90 border-b border-slate-100 dark:border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center text-white font-black text-sm">CS</div>
+            <span className="font-black text-lg tracking-tight text-slate-900 dark:text-white">ClubSphere</span>
+          </div>
+          <div className="hidden md:flex items-center gap-6 ml-6">
+            {[["Features","#features"],["Pricing","#pricing"],["About","#about"]].map(([label, href]) => (
+              <a key={label} href={href} onClick={label === "Pricing" ? (e) => { e.preventDefault(); onPricing(); } : undefined}
+                className="text-sm text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition font-medium">{label}</a>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={toggle} className="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition">{isDark ? <Sun size={16}/> : <Moon size={16}/>}</button>
+            <button onClick={onGetStarted} className="hidden sm:block text-sm font-semibold text-violet-600 dark:text-violet-400 hover:underline px-3 py-1.5">Sign in</button>
+            <button onClick={onGetStarted} className="bg-violet-600 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-violet-700 active:scale-95 transition">Get Started</button>
+            <button onClick={() => setMobileMenu(v => !v)} className="md:hidden p-2 text-slate-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><Menu size={18}/></button>
+          </div>
+        </div>
+        {mobileMenu && (
+          <div className="md:hidden border-t border-slate-100 dark:border-slate-800 px-4 py-3 space-y-2 bg-white dark:bg-slate-950">
+            {["Features","Pricing","Privacy","Terms"].map(l => (
+              <button key={l} onClick={() => { setMobileMenu(false); if(l==="Pricing")onPricing(); if(l==="Privacy")onPrivacy(); if(l==="Terms")onTerms(); }}
+                className="block w-full text-left text-sm text-slate-600 dark:text-slate-400 py-2 font-medium">{l}</button>
+            ))}
+          </div>
+        )}
+      </nav>
+
+      {/* Hero */}
+      <section className="relative overflow-hidden pt-16 pb-20 px-4">
+        <div className="absolute inset-0 pointer-events-none" style={{background: isDark ? "radial-gradient(ellipse at 50% 0%, rgba(124,58,237,0.15) 0%, transparent 70%)" : "radial-gradient(ellipse at 50% 0%, rgba(124,58,237,0.08) 0%, transparent 70%)"}}/>
+        <div className="max-w-4xl mx-auto text-center relative">
+          <div className="inline-flex items-center gap-2 bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 text-xs font-semibold px-3 py-1.5 rounded-full mb-6">
+            🎉 Now live at 4 universities
+          </div>
+          <h1 className="text-4xl md:text-6xl font-black tracking-tight mb-6 leading-tight">
+            One platform for<br/>
+            <span className="text-transparent bg-clip-text" style={{backgroundImage: "linear-gradient(135deg, #7c3aed, #4f46e5)"}}>every university club</span>
+          </h1>
+          <p className="text-lg md:text-xl text-slate-500 dark:text-slate-400 mb-10 max-w-2xl mx-auto leading-relaxed">
+            ClubSphere connects students, club admins, and faculty coordinators in one seamless platform. Discover clubs, register for events, and manage everything — from a single dashboard.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <button onClick={onGetStarted} className="bg-violet-600 text-white font-bold px-8 py-4 rounded-2xl text-base hover:bg-violet-700 active:scale-95 transition shadow-lg shadow-violet-200 dark:shadow-violet-900/30">
+              Get Started Free →
+            </button>
+            <button onClick={onPricing} className="border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-semibold px-8 py-4 rounded-2xl text-base hover:border-violet-300 dark:hover:border-violet-600 transition">
+              View Pricing
+            </button>
+          </div>
+          <p className="text-xs text-slate-400 mt-4">No credit card required · Free for students</p>
+        </div>
+
+        {/* Mock UI preview */}
+        <div className="max-w-3xl mx-auto mt-14">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden" style={{background: isDark ? "#1e293b" : "#f8fafc"}}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+              <div className="flex gap-1.5"><div className="w-3 h-3 rounded-full bg-rose-400"/><div className="w-3 h-3 rounded-full bg-amber-400"/><div className="w-3 h-3 rounded-full bg-emerald-400"/></div>
+              <div className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-lg h-6 mx-4"/>
+            </div>
+            <div className="flex" style={{minHeight: "220px"}}>
+              <div className="w-44 bg-indigo-950 p-3 hidden sm:block flex-shrink-0">
+                <div className="flex items-center gap-2 mb-4"><div className="w-6 h-6 rounded bg-violet-600 flex-shrink-0"/><div className="h-3 bg-indigo-800 rounded flex-1"/></div>
+                {["Dashboard","Explore Clubs","Applications","Messages"].map((item,i) => (
+                  <div key={item} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg mb-1 ${i===0?"bg-violet-600":""}`}>
+                    <div className="w-3 h-3 rounded bg-indigo-700 flex-shrink-0"/>
+                    <div className={`h-2.5 rounded flex-1 ${i===0?"bg-violet-400":"bg-indigo-800"}`}/>
+                  </div>
+                ))}
+              </div>
+              <div className="flex-1 p-4 space-y-3">
+                <div className="rounded-xl p-4" style={{background:"linear-gradient(135deg,#1e1b4b,#4c1d95)"}}>
+                  <div className="h-3 bg-white/30 rounded w-1/3 mb-2"/>
+                  <div className="h-5 bg-white/50 rounded w-2/3 mb-1"/>
+                  <div className="h-2.5 bg-white/20 rounded w-1/2"/>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {["from-violet-500 to-indigo-600","from-amber-400 to-orange-500","from-emerald-400 to-teal-500","from-rose-400 to-pink-600"].map((g,i) => (
+                    <div key={i} className={`bg-gradient-to-br ${g} rounded-xl p-3`}><div className="h-2 bg-white/30 rounded w-1/2 mb-1.5"/><div className="h-5 bg-white/50 rounded w-1/3"/></div>
+                  ))}
+                </div>
+                <div className="bg-white dark:bg-slate-700 rounded-xl p-3 border border-slate-100 dark:border-slate-600">
+                  {[1,2,3].map(i => (<div key={i} className="flex items-center gap-2 py-1.5"><div className="w-6 h-6 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex-shrink-0"/><div className="flex-1 space-y-1"><div className="h-2.5 bg-slate-200 dark:bg-slate-600 rounded w-3/4"/><div className="h-2 bg-slate-100 dark:bg-slate-700 rounded w-1/2"/></div></div>))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Stats */}
+      <section className="py-10 border-y border-slate-100 dark:border-slate-800">
+        <div className="max-w-4xl mx-auto px-4 grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+          {stats.map(s => (
+            <div key={s.label}>
+              <p className="text-3xl font-black text-violet-600 dark:text-violet-400">{s.value}</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 font-medium">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Features */}
+      <section id="features" className="py-20 px-4">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-black mb-3">Built for everyone on campus</h2>
+            <p className="text-slate-500 dark:text-slate-400">Three portals, one platform. Each role gets exactly what they need.</p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {features.map(f => (
+              <div key={f.role} className={`rounded-2xl p-6 text-white bg-gradient-to-br ${f.color}`}>
+                <div className="text-3xl mb-3">{f.emoji}</div>
+                <h3 className="text-xl font-bold mb-4">{f.role}</h3>
+                <ul className="space-y-2">
+                  {f.items.map(item => (
+                    <li key={item} className="flex items-center gap-2 text-sm opacity-90">
+                      <CheckCircle size={14} className="flex-shrink-0 opacity-80"/>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section className={`py-20 px-4 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-black mb-3">Up and running in 24 hours</h2>
+            <p className="text-slate-500 dark:text-slate-400">No lengthy IT integrations. No complex setup. Just results.</p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-8">
+            {steps.map(s => (
+              <div key={s.n} className="text-center">
+                <div className="text-4xl mb-4">{s.emoji}</div>
+                <div className="w-8 h-8 rounded-full bg-violet-600 text-white text-sm font-bold flex items-center justify-center mx-auto mb-3">{s.n}</div>
+                <h3 className="font-bold text-lg mb-2">{s.title}</h3>
+                <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Testimonials */}
+      <section className="py-20 px-4">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-black mb-3">Loved by students & admins</h2>
+          </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {testimonials.map(t => (
+              <div key={t.name} className={`rounded-2xl p-6 border ${isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-100 shadow-sm"}`}>
+                <p className={`text-sm leading-relaxed mb-4 ${isDark ? "text-slate-300" : "text-slate-600"}`}>"{t.quote}"</p>
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0" style={{background:"linear-gradient(135deg,#7c3aed,#4f46e5)"}}>{t.avatar}</div>
+                  <div><p className="text-sm font-semibold">{t.name}</p><p className="text-xs text-slate-400">{t.role}</p></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Pricing preview */}
+      <section id="pricing" className={`py-20 px-4 ${isDark ? "bg-slate-900" : "bg-slate-50"}`}>
+        <div className="max-w-5xl mx-auto text-center">
+          <h2 className="text-3xl md:text-4xl font-black mb-3">Simple, transparent pricing</h2>
+          <p className="text-slate-500 dark:text-slate-400 mb-10">Free for students. Universities pay a flat annual fee.</p>
+          <div className="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+            {[
+              { name: "Student", price: "Free", desc: "Forever free for students", features: ["Browse all clubs", "Register for events", "QR tickets", "Certificates"], cta: "Sign up free", highlight: false },
+              { name: "University", price: "₹49,999", desc: "per university / year", features: ["Unlimited clubs", "Unlimited events", "All 4 portals", "Priority support", "Custom branding"], cta: "Contact sales", highlight: true },
+              { name: "Enterprise", price: "Custom", desc: "for multi-campus networks", features: ["Everything in University", "Multi-campus support", "SLA guarantee", "Dedicated success manager", "API access"], cta: "Talk to us", highlight: false },
+            ].map(p => (
+              <div key={p.name} className={`rounded-2xl p-6 border text-left transition-transform hover:-translate-y-1 ${p.highlight ? "bg-violet-600 border-violet-500 text-white" : isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-100 shadow-sm"}`}>
+                <p className={`text-xs font-bold uppercase tracking-wide mb-2 ${p.highlight ? "text-violet-200" : "text-violet-600 dark:text-violet-400"}`}>{p.name}</p>
+                <p className={`text-3xl font-black mb-1 ${p.highlight ? "text-white" : ""}`}>{p.price}</p>
+                <p className={`text-xs mb-5 ${p.highlight ? "text-violet-200" : "text-slate-400"}`}>{p.desc}</p>
+                <ul className="space-y-2 mb-6">
+                  {p.features.map(f => (
+                    <li key={f} className={`flex items-center gap-2 text-sm ${p.highlight ? "text-violet-100" : isDark ? "text-slate-300" : "text-slate-600"}`}>
+                      <CheckCircle size={13} className={p.highlight ? "text-violet-200" : "text-violet-500"}/>{f}
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={onGetStarted} className={`w-full py-2.5 rounded-xl text-sm font-semibold transition active:scale-95 ${p.highlight ? "bg-white text-violet-600 hover:bg-violet-50" : "bg-violet-600 text-white hover:bg-violet-700"}`}>{p.cta}</button>
+              </div>
+            ))}
+          </div>
+          <button onClick={onPricing} className="mt-8 text-violet-600 dark:text-violet-400 text-sm font-medium hover:underline">View full pricing details →</button>
+        </div>
+      </section>
+
+      {/* Final CTA */}
+      <section className="py-20 px-4">
+        <div className="max-w-3xl mx-auto text-center">
+          <div className="rounded-3xl p-10 text-white" style={{background:"linear-gradient(135deg,#1e1b4b 0%,#4c1d95 100%)"}}>
+            <h2 className="text-3xl md:text-4xl font-black mb-3">Ready to transform campus life?</h2>
+            <p className="text-indigo-200 mb-8 text-lg">Join 12,000+ students already on ClubSphere</p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <button onClick={onGetStarted} className="bg-white text-violet-700 font-bold px-8 py-4 rounded-2xl text-base hover:bg-violet-50 active:scale-95 transition">Get Started Free →</button>
+              <button className="border-2 border-white/30 text-white font-semibold px-8 py-4 rounded-2xl text-base hover:border-white/60 transition">Schedule a Demo</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className={`border-t py-10 px-4 ${isDark ? "border-slate-800 bg-slate-950" : "border-slate-100 bg-slate-50"}`}>
+        <div className="max-w-6xl mx-auto">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-violet-600 flex items-center justify-center text-white font-black text-xs">CS</div>
+              <span className="font-black text-slate-800 dark:text-white">ClubSphere</span>
+              <span className="text-slate-400 text-sm">© 2025</span>
+            </div>
+            <div className="flex items-center gap-6">
+              {[["Pricing", onPricing], ["Privacy Policy", onPrivacy], ["Terms of Service", onTerms]].map(([label, fn]) => (
+                <button key={label} onClick={fn} className="text-sm text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition">{label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function PricingPage({ onBack, onGetStarted }) {
+  const { isDark } = useTheme();
+  const plans = [
+    { name: "Student", price: "Free", period: "forever", desc: "Everything a student needs to discover and participate in campus life.", features: ["Browse all university clubs", "Register for events", "QR entry tickets", "Participation certificates", "Follow clubs for announcements", "View club team & info"], cta: "Sign up free", highlight: false },
+    { name: "University", price: "₹49,999", period: "/ year", desc: "Full platform for one university with unlimited clubs, events, and users.", features: ["Everything in Student", "Unlimited clubs & events", "Club Admin portal", "Faculty Coordinator portal", "Attendance tracking", "CSV data exports", "Announcements system", "Priority email support", "Custom university branding"], cta: "Contact Sales", highlight: true },
+    { name: "Enterprise", price: "Custom", period: "", desc: "For university groups, consortiums, and multi-campus networks.", features: ["Everything in University", "Multi-campus management", "Tech Admin portal", "99.9% SLA guarantee", "Dedicated success manager", "SSO / LDAP integration", "API access", "Custom contracts & billing"], cta: "Talk to Us", highlight: false },
+  ];
+  const faqs = [
+    { q: "Is ClubSphere really free for students?", a: "Yes — students never pay anything. ClubSphere is funded by the university subscription, so students get full access at no cost." },
+    { q: "How long does onboarding take?", a: "Most universities are fully live within 24 hours. We handle the setup, data migration, and training for club admins and faculty coordinators." },
+    { q: "Can we try before committing?", a: "Absolutely. We offer a 30-day free pilot for universities. No credit card, no commitment." },
+    { q: "What happens to our data if we cancel?", a: "You own your data. We'll provide a full export of all users, events, and registrations in standard formats before account closure." },
+  ];
+  return (
+    <div className={`min-h-screen ${isDark ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 hover:text-violet-600 transition mb-8"><ArrowRight size={14} className="rotate-180"/>Back</button>
+        <div className="text-center mb-14">
+          <h1 className="text-4xl md:text-5xl font-black mb-4">Pricing</h1>
+          <p className="text-slate-500 dark:text-slate-400 text-lg">Free for students. Simple annual pricing for universities.</p>
+        </div>
+        <div className="grid md:grid-cols-3 gap-6 mb-16">
+          {plans.map(p => (
+            <div key={p.name} className={`rounded-2xl p-7 border flex flex-col ${p.highlight ? "bg-violet-600 border-violet-500 text-white shadow-2xl shadow-violet-200 dark:shadow-violet-900/30 md:-translate-y-2" : isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200 shadow-sm"}`}>
+              <p className={`text-xs font-bold uppercase tracking-widest mb-2 ${p.highlight ? "text-violet-200" : "text-violet-600 dark:text-violet-400"}`}>{p.name}</p>
+              <div className="mb-2"><span className={`text-4xl font-black ${p.highlight ? "text-white" : ""}`}>{p.price}</span>{p.period && <span className={`text-sm ml-1 ${p.highlight ? "text-violet-200" : "text-slate-400"}`}>{p.period}</span>}</div>
+              <p className={`text-sm mb-6 leading-relaxed ${p.highlight ? "text-violet-100" : "text-slate-500 dark:text-slate-400"}`}>{p.desc}</p>
+              <ul className="space-y-2.5 mb-8 flex-1">
+                {p.features.map(f => (<li key={f} className={`flex items-center gap-2 text-sm ${p.highlight ? "text-violet-100" : isDark ? "text-slate-300" : "text-slate-600"}`}><CheckCircle size={14} className={p.highlight ? "text-violet-200 flex-shrink-0" : "text-violet-500 flex-shrink-0"}/>{f}</li>))}
+              </ul>
+              <button onClick={onGetStarted} className={`w-full py-3 rounded-xl text-sm font-semibold transition active:scale-95 ${p.highlight ? "bg-white text-violet-600 hover:bg-violet-50" : "bg-violet-600 text-white hover:bg-violet-700"}`}>{p.cta}</button>
+            </div>
+          ))}
+        </div>
+        <div className="max-w-2xl mx-auto">
+          <h2 className="text-2xl font-black mb-6 text-center">Frequently Asked Questions</h2>
+          <div className="space-y-4">
+            {faqs.map(f => (
+              <div key={f.q} className={`rounded-xl p-5 border ${isDark ? "bg-slate-800 border-slate-700" : "bg-slate-50 border-slate-100"}`}>
+                <p className="font-semibold mb-2">{f.q}</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{f.a}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="text-center mt-14 py-10 border-t border-slate-100 dark:border-slate-800">
+          <p className="text-slate-500 dark:text-slate-400 text-sm">Questions? Email us at <a href="mailto:hello@clubsphere.in" className="text-violet-600 dark:text-violet-400 font-medium">hello@clubsphere.in</a></p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PrivacyPage({ onBack }) {
+  const { isDark } = useTheme();
+  const sections = [
+    { title: "1. Information We Collect", content: "We collect information you provide directly to us when you register for an account, such as your name, enrollment number, college email address, and phone number. We also collect information about your use of the platform, including events you register for, clubs you follow, and actions you take within the app." },
+    { title: "2. How We Use Your Information", content: "We use the information we collect to provide, maintain, and improve ClubSphere; to process event registrations and send confirmation tickets; to send notifications about events and announcements from clubs you follow; and to generate participation certificates. We do not sell your personal information to third parties." },
+    { title: "3. Data Sharing", content: "Your information may be shared with your university administration for the purpose of verifying enrollment and managing club activities. Club admins can see registration details (name and enrollment number) of students who register for their events. Faculty coordinators can view approved event registrations." },
+    { title: "4. Data Retention", content: "We retain your account information for as long as your account is active or as needed to provide services. Event registration data is retained for one academic year after the event. You may request deletion of your account and associated data by contacting support." },
+    { title: "5. Security", content: "We implement appropriate technical and organizational measures to protect your personal information against unauthorized access, alteration, disclosure, or destruction. Authentication is handled via OTP (one-time password) to your registered email or phone, eliminating the need for passwords." },
+    { title: "6. Your Rights", content: "You have the right to access, correct, or delete your personal information. You may also object to or restrict certain processing of your data. To exercise these rights, contact your university's ClubSphere administrator or email us at privacy@clubsphere.in." },
+    { title: "7. Cookies", content: "We use minimal cookies for authentication session management and your theme preference (light/dark mode). We do not use tracking cookies or third-party advertising cookies." },
+    { title: "8. Changes to This Policy", content: "We may update this Privacy Policy from time to time. We will notify you of any significant changes by posting the new policy on this page with an updated effective date. Continued use of ClubSphere after changes constitutes acceptance of the new policy." },
+    { title: "9. Contact Us", content: "If you have any questions about this Privacy Policy, please contact us at privacy@clubsphere.in or write to ClubSphere, Gurgaon, Haryana, India." },
+  ];
+  return (
+    <div className={`min-h-screen ${isDark ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 hover:text-violet-600 transition mb-8"><ArrowRight size={14} className="rotate-180"/>Back</button>
+        <div className="mb-8">
+          <h1 className="text-3xl font-black mb-2">Privacy Policy</h1>
+          <p className="text-slate-400 text-sm">Effective date: January 1, 2025</p>
+        </div>
+        <p className={`text-sm leading-relaxed mb-8 p-4 rounded-xl border ${isDark ? "bg-slate-800 border-slate-700 text-slate-300" : "bg-violet-50 border-violet-100 text-slate-600"}`}>
+          ClubSphere is committed to protecting your privacy. This policy explains what information we collect, how we use it, and your rights regarding your personal data.
+        </p>
+        <div className="space-y-8">
+          {sections.map(s => (
+            <div key={s.title}>
+              <h2 className="font-bold text-base mb-2">{s.title}</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{s.content}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TermsPage({ onBack }) {
+  const { isDark } = useTheme();
+  const sections = [
+    { title: "1. Acceptance of Terms", content: "By accessing or using ClubSphere, you agree to be bound by these Terms of Service and our Privacy Policy. If you do not agree to these terms, please do not use the platform. These terms apply to all users, including students, club administrators, and faculty coordinators." },
+    { title: "2. Eligibility", content: "ClubSphere is intended for use by enrolled students, faculty members, and authorized club administrators at participating universities. You must be at least 13 years of age to use this service. By using ClubSphere, you represent that you meet these requirements." },
+    { title: "3. User Accounts", content: "You are responsible for maintaining the confidentiality of your account credentials and for all activities that occur under your account. You agree to notify us immediately of any unauthorized use of your account. We reserve the right to suspend or terminate accounts that violate these terms." },
+    { title: "4. Acceptable Use", content: "You agree not to use ClubSphere to: post false or misleading information about events; harass, intimidate, or harm other users; attempt to gain unauthorized access to other accounts; use the platform for commercial purposes not approved by your university; or violate any applicable laws or regulations." },
+    { title: "5. Club Events", content: "Club administrators are responsible for the accuracy of event information they post. By registering for an event, you agree to the specific terms set by the organizing club. ClubSphere is not responsible for the conduct of events or the accuracy of club-provided information." },
+    { title: "6. Payments", content: "For paid events, payment processing is handled by third-party payment providers (Razorpay). ClubSphere is not responsible for payment disputes. Refund policies for paid events are set by the organizing club and university, not by ClubSphere." },
+    { title: "7. Intellectual Property", content: "The ClubSphere platform, including its design, features, and content created by us, is owned by ClubSphere and protected by applicable intellectual property laws. Content created by users (event descriptions, announcements) remains the property of the respective users and clubs." },
+    { title: "8. Limitation of Liability", content: "ClubSphere is provided 'as is' without warranties of any kind. We are not liable for any indirect, incidental, or consequential damages arising from your use of the platform, including but not limited to loss of data or inability to attend events." },
+    { title: "9. Changes to Terms", content: "We reserve the right to modify these Terms at any time. We will provide notice of significant changes via the platform. Your continued use of ClubSphere after changes constitutes acceptance of the revised terms." },
+    { title: "10. Governing Law", content: "These Terms are governed by the laws of India. Any disputes arising from these Terms or your use of ClubSphere shall be subject to the exclusive jurisdiction of the courts in Gurgaon, Haryana, India." },
+  ];
+  return (
+    <div className={`min-h-screen ${isDark ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 hover:text-violet-600 transition mb-8"><ArrowRight size={14} className="rotate-180"/>Back</button>
+        <div className="mb-8">
+          <h1 className="text-3xl font-black mb-2">Terms of Service</h1>
+          <p className="text-slate-400 text-sm">Effective date: January 1, 2025</p>
+        </div>
+        <p className={`text-sm leading-relaxed mb-8 p-4 rounded-xl border ${isDark ? "bg-slate-800 border-slate-700 text-slate-300" : "bg-violet-50 border-violet-100 text-slate-600"}`}>
+          Please read these Terms of Service carefully before using ClubSphere. These terms constitute a legally binding agreement between you and ClubSphere.
+        </p>
+        <div className="space-y-8">
+          {sections.map(s => (
+            <div key={s.title}>
+              <h2 className="font-bold text-base mb-2">{s.title}</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{s.content}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-10 pt-6 border-t border-slate-100 dark:border-slate-800 text-center text-xs text-slate-400">
+          For questions about these Terms, contact legal@clubsphere.in
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingFlow({ role, onDone }) {
+  const [step, setStep] = useState(0);
+  const { isDark } = useTheme();
+  const { add } = useToast();
+  const steps = {
+    student: [
+      { title: "Welcome to ClubSphere! 🎉", desc: "You're now connected to your university's club ecosystem. Here's a quick tour.", emoji: "🏛️", action: "Next →" },
+      { title: "Explore clubs", desc: "Browse all clubs in your university. Filter by category or level. Hit Follow to stay updated.", emoji: "🔍", action: "Next →" },
+      { title: "Register for events", desc: "Tap any event to see details — date, venue, price. Register in one tap and get a QR ticket instantly.", emoji: "🎫", action: "Next →" },
+      { title: "You're all set!", desc: "Your dashboard is ready. Check Upcoming Events to see what's on.", emoji: "✅", action: "Enter ClubSphere →" },
+    ],
+    club: [
+      { title: "Welcome, Club Admin! 🏆", desc: "You're set up as an admin for your club. Let's get your first event live.", emoji: "🚀", action: "Next →" },
+      { title: "Create your first event", desc: "Go to All Events → New Event. Fill in the details, set a price (or keep it free), and publish.", emoji: "📅", action: "Next →" },
+      { title: "Manage registrations", desc: "Students register automatically — no approvals needed. Check Applications to see who's coming.", emoji: "👥", action: "Next →" },
+      { title: "You're ready!", desc: "Post an announcement to welcome your followers. Your dashboard awaits.", emoji: "✅", action: "Enter ClubSphere →" },
+    ],
+    faculty: [
+      { title: "Welcome, Dr. Coordinator! 🎯", desc: "You've been set up as a Faculty Coordinator for your assigned club.", emoji: "🏛️", action: "Next →" },
+      { title: "Review pending events", desc: "Clubs submit events for your approval. Check your Dashboard → Pending Approvals to review.", emoji: "✔️", action: "Next →" },
+      { title: "Track everything", desc: "The Audit Trail page logs every approval decision with timestamp. Nothing gets missed.", emoji: "📋", action: "Next →" },
+      { title: "You're ready!", desc: "Your oversight dashboard is set up. All pending events will appear here.", emoji: "✅", action: "Enter ClubSphere →" },
+    ],
+    techAdmin: [
+      { title: "Welcome, Tech Admin! 🛡️", desc: "You have platform-level access to manage all universities, users, and settings.", emoji: "🖥️", action: "Next →" },
+      { title: "Add universities", desc: "Go to Universities → Add University to onboard a new institution. They're live instantly.", emoji: "🏫", action: "Next →" },
+      { title: "Manage users", desc: "User Management lets you search, filter by role, and suspend/restore any account across the platform.", emoji: "👤", action: "Next →" },
+      { title: "Platform is live!", desc: "Monitor analytics, configure system settings, and keep the platform running smoothly.", emoji: "✅", action: "Enter ClubSphere →" },
+    ],
+  };
+  const roleSteps = steps[role] || steps.student;
+  const current = roleSteps[step];
+  const isLast = step === roleSteps.length - 1;
+
+  return (
+    <div className={`min-h-screen flex items-center justify-center p-6 ${isDark ? "bg-slate-950" : "bg-slate-50"}`}>
+      <div className={`w-full max-w-sm rounded-2xl border shadow-xl overflow-hidden ${isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-100"}`}>
+        {/* Progress */}
+        <div className="flex gap-1 p-4 pb-0">
+          {roleSteps.map((_, i) => (
+            <div key={i} className={`h-1 flex-1 rounded-full transition-all ${i <= step ? "bg-violet-600" : isDark ? "bg-slate-700" : "bg-slate-100"}`}/>
+          ))}
+        </div>
+        <div className="p-8 text-center">
+          <div className="text-6xl mb-6">{current.emoji}</div>
+          <h2 className={`text-xl font-bold mb-3 ${isDark ? "text-white" : "text-slate-900"}`}>{current.title}</h2>
+          <p className={`text-sm leading-relaxed mb-8 ${isDark ? "text-slate-400" : "text-slate-500"}`}>{current.desc}</p>
+          <button onClick={() => { if (isLast) { add("Welcome to ClubSphere! 🎉"); onDone(); } else setStep(s => s + 1); }}
+            className="w-full bg-violet-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-violet-700 active:scale-95 transition">
+            {current.action}
+          </button>
+          {!isLast && (
+            <button onClick={() => { add("Welcome to ClubSphere! 🎉"); onDone(); }} className={`mt-3 text-sm ${isDark ? "text-slate-500" : "text-slate-400"} hover:text-slate-600 transition`}>
+              Skip intro
+            </button>
+          )}
+        </div>
+        <div className={`px-8 pb-6 text-center text-xs ${isDark ? "text-slate-600" : "text-slate-300"}`}>
+          Step {step + 1} of {roleSteps.length}
+        </div>
+      </div>
+    </div>
   );
 }
