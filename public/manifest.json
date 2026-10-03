@@ -1,0 +1,20 @@
+{
+  "name": "ClubSphere — University Club Platform",
+  "short_name": "ClubSphere",
+  "description": "Discover clubs, register for events, and manage everything at your university.",
+  "theme_color": "#7c3aed",
+  "background_color": "#1e1b4b",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "start_url": "/",
+  "categories": ["education", "social"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Explore Clubs", "url": "/", "description": "Browse university clubs" },
+    { "name": "My Applications", "url": "/", "description": "View your event registrations" }
+  ]
+}
