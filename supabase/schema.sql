@@ -161,3 +161,27 @@ create or replace view public.club_stats as
          (select count(*) from public.events e where e.club_id = c.id and e.status = 'published') as events
   from public.clubs c;
 grant select on public.club_stats to anon, authenticated;
+
+-- ── Batch 6d: universities stats, profile contact fields ─────────────────────
+alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists phone text;
+alter table public.profiles add column if not exists status text not null default 'active' check (status in ('active','suspended'));
+
+create or replace function public.handle_new_user() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, email, phone) values (new.id, new.email, new.phone) on conflict do nothing;
+  return new;
+end $$;
+
+-- backfill for users who signed in before this block was run
+update public.profiles p set email = u.email, phone = u.phone from auth.users u where u.id = p.id and p.email is null and p.phone is null;
+
+create or replace view public.university_stats as
+  select u.id as university_id,
+         (select count(*) from public.clubs c where c.university_id = u.id) as clubs,
+         (select count(*) from public.profiles p where p.university_id = u.id) as students,
+         (select count(*) from public.events e join public.clubs c on c.id = e.club_id
+            where c.university_id = u.id and e.status = 'published') as events
+  from public.universities u;
+grant select on public.university_stats to anon, authenticated;

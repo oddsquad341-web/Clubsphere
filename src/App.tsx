@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -568,6 +568,81 @@ function useMyApps() {
   return { apps, loading };
 }
 
+function useUniversities() {
+  const { add } = useToast();
+  const [unis, setUnis] = useState(supabaseEnabled ? [] : UNIVERSITIES);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchUniversities().then(r=>{ if (alive) setUnis(r); }).catch(()=>add("Couldn't load universities","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const addUniversity = async (u) => {
+    if (supabaseEnabled) { try { const c = await createUniversityDb(u); setUnis(l=>[...l,c]); return true; } catch { add("Couldn't add university","error"); return false; } }
+    setUnis(l=>[...l,{id:Date.now().toString(),...u,logo:u.logo||"🏫",clubs:0,students:0,events:0,active:true}]); return true;
+  };
+  const toggleUni = async (id) => {
+    const u = unis.find(x=>x.id===id); if (!u) return false;
+    if (supabaseEnabled) { try { await setUniversityActive(id, !u.active); } catch { add("Couldn't update university","error"); return false; } }
+    setUnis(l=>l.map(x=>x.id===id?{...x,active:!x.active}:x)); return true;
+  };
+  return { unis, loading, addUniversity, toggleUni };
+}
+
+function useMyClub() {
+  const [club, setClub] = useState(supabaseEnabled ? null : { name: "Tech Society", followers: FOLLOWERS_DATA.length });
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchMyClub().then(c=>{ if (alive) setClub(c); }).catch(()=>{});
+    return ()=>{ alive = false; };
+  },[]);
+  return { club, followers: club?.followers ?? 0 };
+}
+
+function useAnnouncements() {
+  const { add } = useToast();
+  const [items, setItems] = useState(supabaseEnabled ? [] : ANNOUNCEMENTS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchAnnouncements().then(r=>{ if (alive) setItems(r); }).catch(()=>add("Couldn't load announcements","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const postAnnouncement = async (a) => {
+    if (supabaseEnabled) { try { const c = await createAnnouncementDb(a); setItems(l=>[c,...l]); return true; } catch { add("Couldn't post announcement","error"); return false; } }
+    setItems(l=>[{id:Date.now(),...a,date:new Date().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}),reach:FOLLOWERS_DATA.length},...l]); return true;
+  };
+  const removeAnnouncement = async (id) => {
+    if (supabaseEnabled) { try { await deleteAnnouncementDb(id); } catch { add("Couldn't delete announcement","error"); return false; } }
+    setItems(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  return { announcements: items, loading, postAnnouncement, removeAnnouncement };
+}
+
+function useRoles() {
+  const { add } = useToast();
+  const [roles, setRoles] = useState(supabaseEnabled ? [] : RECRUITMENT_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchRoles().then(r=>{ if (alive) setRoles(r); }).catch(()=>add("Couldn't load roles","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const addRoleRecord = async (r) => {
+    if (supabaseEnabled) { try { const c = await createRoleDb(r); setRoles(l=>[c,...l]); return true; } catch { add("Couldn't post role. Is a club linked to your account?","error"); return false; } }
+    setRoles(l=>[...l,{id:Date.now(),applied:0,...r}]); return true;
+  };
+  const removeRole = async (id) => {
+    if (supabaseEnabled) { try { await deleteRoleDb(id); } catch { add("Couldn't remove role","error"); return false; } }
+    setRoles(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  return { roles, loading, addRoleRecord, removeRole };
+}
+
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
 
 function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
@@ -682,6 +757,7 @@ function QRTicketModal({ app, onClose }) {
 
 function UniversitySelector({ onSelect }) {
   const { isDark } = useTheme();
+  const { unis, loading: uniLoading } = useUniversities();
   const bg = isDark ? "bg-slate-950" : "bg-slate-50";
   return (
     <div className={`min-h-screen flex flex-col items-center justify-center p-6 ${bg}`}>
@@ -691,7 +767,8 @@ function UniversitySelector({ onSelect }) {
         <p className={`mt-2 text-sm ${isDark?"text-slate-400":"text-slate-500"}`}>Select your university to get started</p>
       </div>
       <div className="w-full max-w-sm space-y-3">
-        {UNIVERSITIES.map(u => (
+        {supabaseEnabled&&!uniLoading&&unis.length===0&&<p className={`text-sm text-center ${isDark?"text-slate-400":"text-slate-500"}`}>No universities have been added yet.</p>}
+        {unis.map(u => (
           <button key={u.id} onClick={()=>u.active&&onSelect(u)} disabled={!u.active}
             className={`w-full flex items-center gap-4 p-4 rounded-2xl border shadow-sm text-left transition-all ${u.active?isDark?"bg-slate-800 border-slate-700 hover:border-violet-500 hover:shadow-md":"bg-white border-slate-100 hover:border-violet-300 hover:shadow-md":isDark?"bg-slate-900 border-slate-800 opacity-50 cursor-not-allowed":"bg-white border-slate-100 opacity-50 cursor-not-allowed"}`}>
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0 ${isDark?"bg-slate-700":"bg-violet-50"}`}>{u.logo}</div>
@@ -744,6 +821,8 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
       verifyOtp(tab==="email"?"email":"phone", value, otp).then(async ({data,error})=>{
         if (error||!data?.user){setLoading(false);setError(friendlyAuthError(error));return;}
         const profile = await getProfile(data.user.id);
+        if (profile?.status==="suspended"){ await signOut(); setLoading(false); setError("This account has been suspended. Contact your university admin."); return; }
+        if (profile&&!profile.university_id&&typeof university?.id==="string"&&university.id.length===36) setMyUniversity(university.id).catch(()=>{});
         setLoading(false);
         onAuth(profile?.role||"student"); // role is assigned in the database, not chosen by the user
       });
@@ -1249,21 +1328,23 @@ function RegistrationsPage() {
 }
 
 function AnnouncementsPage() {
-  const [announcements, setAnnouncements] = useState(ANNOUNCEMENTS_DATA);
+  const { announcements, postAnnouncement, removeAnnouncement } = useAnnouncements();
+  const { followers: followerCount } = useMyClub();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [fields, setFields] = useState({title:"",content:"",emoji:"📢"});
   const { add } = useToast();
-  const post = () => {
+  const post = async () => {
     const anTitle = sanitizeText(fields.title,120);
     if (!anTitle){add("Title required","error");return;}
-    setAnnouncements(l=>[{id:Date.now(),title:anTitle,content:sanitizeText(fields.content,1000),date:new Date().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}),reach:156,emoji:fields.emoji},...l]);
+    const ok = await postAnnouncement({title:anTitle,content:sanitizeText(fields.content,1000),emoji:fields.emoji});
+    if (!ok) return;
     setFields({title:"",content:"",emoji:"📢"}); setShowForm(false); add("Announcement sent to all followers! 📢");
   };
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Announcements</h2><p className="text-slate-400 text-sm">Send updates to your {FOLLOWERS_DATA.length} followers</p></div>
+        <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Announcements</h2><p className="text-slate-400 text-sm">Send updates to your {followerCount} followers</p></div>
         <div className="flex items-center gap-2">
           <button onClick={()=>setEditing(e=>!e)} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
           <button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Send size={14}/>New Announcement</button>
@@ -1279,7 +1360,7 @@ function AnnouncementsPage() {
             <div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Title</label><input value={fields.title} onChange={e=>setFields(f=>({...f,title:e.target.value}))} className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"/></div>
             <div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Message</label><textarea rows={3} value={fields.content} onChange={e=>setFields(f=>({...f,content:e.target.value}))} className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 resize-none"/></div>
           </div>
-          <button onClick={post} className="flex items-center gap-2 bg-violet-600 text-white px-5 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Send size={14}/>Send to {FOLLOWERS_DATA.length} followers</button>
+          <button onClick={post} className="flex items-center gap-2 bg-violet-600 text-white px-5 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Send size={14}/>Send to {followerCount} followers</button>
         </Card>
       )}
       {announcements.length===0?<EmptyState emoji="📢" title="No announcements yet" desc="Keep your followers updated." action="Post Announcement" onAction={()=>setShowForm(true)}/>:(
@@ -1291,7 +1372,7 @@ function AnnouncementsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <p className="font-semibold text-slate-800 dark:text-slate-200">{a.title}</p>
-                    {editing&&<button onClick={()=>{setAnnouncements(l=>l.filter(x=>x.id!==a.id));add("Announcement deleted","info");}} className="p-1 rounded bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 flex-shrink-0"><Trash2 size={13}/></button>}
+                    {editing&&<button onClick={()=>{removeAnnouncement(a.id).then(ok=>{if(ok)add("Announcement deleted","info");});}} className="p-1 rounded bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 flex-shrink-0"><Trash2 size={13}/></button>}
                   </div>
                   <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">{a.content}</p>
                   <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
@@ -1346,12 +1427,12 @@ function ClubProfile() {
 }
 
 function TeamRecruitmentPage() {
-  const [roles, setRoles] = useState(RECRUITMENT_DATA);
+  const { roles, addRoleRecord, removeRole } = useRoles();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [fields, setFields] = useState({title:"",open:"",desc:""});
   const { add } = useToast();
-  const addRole = () => { const rTitle = sanitizeText(fields.title,100); if (!rTitle){add("Title required","error");return;} setRoles(l=>[...l,{id:Date.now(),title:rTitle,open:parseInt(fields.open)||1,applied:0,desc:sanitizeText(fields.desc,500)}]); setFields({title:"",open:"",desc:""}); setShowForm(false); add(`"${rTitle}" posted! 🎉`); };
+  const addRole = async () => { const rTitle = sanitizeText(fields.title,100); if (!rTitle){add("Title required","error");return;} const ok = await addRoleRecord({title:rTitle,open:parseInt(fields.open)||1,desc:sanitizeText(fields.desc,500)}); if (!ok) return; setFields({title:"",open:"",desc:""}); setShowForm(false); add(`"${rTitle}" posted! 🎉`); };
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -1364,7 +1445,7 @@ function TeamRecruitmentPage() {
       {showForm&&(<Card className="border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20"><div className="flex justify-between mb-3"><h3 className="font-semibold text-slate-800 dark:text-slate-200">New Role</h3><button onClick={()=>setShowForm(false)} className="text-slate-400 p-1"><X size={16}/></button></div><div className="grid md:grid-cols-2 gap-3 mb-3"><div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Role Title</label><input value={fields.title} onChange={e=>setFields(f=>({...f,title:e.target.value}))} className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"/></div><div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Openings</label><input value={fields.open} onChange={e=>setFields(f=>({...f,open:e.target.value}))} type="number" className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"/></div><div className="md:col-span-2"><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Responsibilities</label><textarea rows={2} value={fields.desc} onChange={e=>setFields(f=>({...f,desc:e.target.value}))} className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 resize-none"/></div></div><button onClick={addRole} className="bg-violet-600 text-white px-5 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium">Post Role</button></Card>)}
       {roles.length===0?<EmptyState emoji="💼" title="No open roles" desc="Post a role to start recruiting." action="Post Role" onAction={()=>setShowForm(true)}/>:(
         <div className="grid md:grid-cols-2 gap-4">
-          {roles.map(r=>(<Card key={r.id}><div className="flex justify-between items-start mb-1"><div className="flex-1 pr-2"><p className="font-semibold text-slate-800 dark:text-slate-200">{r.title}</p><p className="text-xs text-slate-400 mt-0.5">{r.desc}</p></div>{editing&&<button onClick={()=>{setRoles(l=>l.filter(x=>x.id!==r.id));add(`"${r.title}" removed`,"info");}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}</div><div className="flex items-center justify-between mt-3"><span className="text-xs text-violet-600 dark:text-violet-400 font-medium">{r.open} opening{r.open>1?"s":""}</span><span className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2.5 py-0.5 rounded-full font-semibold">{r.applied} applied</span></div><button onClick={()=>add("Applicants view coming soon!","info")} className="w-full text-center text-sm text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-700 py-2 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-900/20 transition font-medium mt-3">View Applicants</button></Card>))}
+          {roles.map(r=>(<Card key={r.id}><div className="flex justify-between items-start mb-1"><div className="flex-1 pr-2"><p className="font-semibold text-slate-800 dark:text-slate-200">{r.title}</p><p className="text-xs text-slate-400 mt-0.5">{r.desc}</p></div>{editing&&<button onClick={()=>{removeRole(r.id).then(ok=>{if(ok)add(`"${r.title}" removed`,"info");});}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}</div><div className="flex items-center justify-between mt-3"><span className="text-xs text-violet-600 dark:text-violet-400 font-medium">{r.open} opening{r.open>1?"s":""}</span><span className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2.5 py-0.5 rounded-full font-semibold">{r.applied} applied</span></div><button onClick={()=>add("Applicants view coming soon!","info")} className="w-full text-center text-sm text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-700 py-2 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-900/20 transition font-medium mt-3">View Applicants</button></Card>))}
         </div>
       )}
     </div>
@@ -1516,40 +1597,41 @@ function FacultyProfile() {
 // ─── TECH ADMIN ───────────────────────────────────────────────────────────────
 
 function TechAdminDashboard({ setPage }) {
+  const { unis } = useUniversities();
   const [loading, setLoading] = useState(true);
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),900);return()=>clearTimeout(t);},[]);
   if (loading) return <SkeletonPage/>;
-  const totalStudents=UNIVERSITIES.reduce((s,u)=>s+u.students,0);
-  const totalClubs=UNIVERSITIES.reduce((s,u)=>s+u.clubs,0);
-  const totalEvents=UNIVERSITIES.reduce((s,u)=>s+u.events,0);
+  const totalStudents=unis.reduce((s,u)=>s+u.students,0);
+  const totalClubs=unis.reduce((s,u)=>s+u.clubs,0);
+  const totalEvents=unis.reduce((s,u)=>s+u.events,0);
   return (
     <div className="space-y-5">
       <div className="rounded-2xl p-6 text-white" style={{background:"linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%)"}}>
         <div className="flex items-center gap-2 mb-3"><Shield size={16} className="text-violet-400"/><p className="text-violet-300 text-sm font-medium">Tech Admin · Platform Level</p></div>
         <h2 className="text-2xl font-bold mb-1">ClubSphere Admin</h2>
-        <p className="text-indigo-200 text-sm">{UNIVERSITIES.filter(u=>u.active).length} universities live · {totalStudents.toLocaleString()} total users</p>
+        <p className="text-indigo-200 text-sm">{unis.filter(u=>u.active).length} universities live · {totalStudents.toLocaleString()} total users</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Universities" value={String(UNIVERSITIES.length)} sub={`${UNIVERSITIES.filter(u=>u.active).length} active`} gradient="bg-gradient-to-br from-violet-500 to-indigo-700" onClick={()=>setPage("universities")}/>
+        <StatCard label="Universities" value={String(unis.length)} sub={`${unis.filter(u=>u.active).length} active`} gradient="bg-gradient-to-br from-violet-500 to-indigo-700" onClick={()=>setPage("universities")}/>
         <StatCard label="Total Users" value={totalStudents.toLocaleString()} sub="All universities" gradient="bg-gradient-to-br from-amber-400 to-orange-500" onClick={()=>setPage("users")}/>
         <StatCard label="Total Clubs" value={String(totalClubs)} sub="Across platform" gradient="bg-gradient-to-br from-emerald-400 to-teal-600" onClick={()=>setPage("clubs")}/>
         <StatCard label="Events / Month" value={String(totalEvents)} gradient="bg-gradient-to-br from-rose-400 to-pink-600" onClick={()=>setPage("analytics")}/>
       </div>
       <Card>
         <SectionHeader title="Universities" action="Manage" onAction={()=>setPage("universities")}/>
-        {UNIVERSITIES.map(u=>(<div key={u.id} className="flex items-center gap-3 py-3 border-b border-slate-50 dark:border-slate-700 last:border-0"><span className="text-xl">{u.logo}</span><div className="flex-1 min-w-0"><p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{u.name}</p><p className="text-xs text-slate-400">{u.campus} · {u.clubs} clubs</p></div><StatusBadge status={u.active?"active":"inactive"}/></div>))}
+        {unis.map(u=>(<div key={u.id} className="flex items-center gap-3 py-3 border-b border-slate-50 dark:border-slate-700 last:border-0"><span className="text-xl">{u.logo}</span><div className="flex-1 min-w-0"><p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{u.name}</p><p className="text-xs text-slate-400">{u.campus} · {u.clubs} clubs</p></div><StatusBadge status={u.active?"active":"inactive"}/></div>))}
       </Card>
     </div>
   );
 }
 
 function TechAdminUniversities() {
-  const [unis, setUnis] = useState(UNIVERSITIES);
+  const { unis, addUniversity, toggleUni } = useUniversities();
   const [showForm, setShowForm] = useState(false);
   const [fields, setFields] = useState({name:"",campus:"",logo:""});
   const { add } = useToast();
-  const toggle = (id) => { const u=unis.find(x=>x.id===id); setUnis(l=>l.map(x=>x.id===id?{...x,active:!x.active}:x)); add(u?.active?`${u.name} disabled`:`${u.name} enabled`); };
-  const addUni = () => { const uName = sanitizeText(fields.name,100); if (!uName){add("Name required","error");return;} setUnis(l=>[...l,{id:Date.now().toString(),name:uName,campus:sanitizeText(fields.campus,100),logo:fields.logo||"🏫",clubs:0,students:0,events:0,active:true}]); setFields({name:"",campus:"",logo:""}); setShowForm(false); add(`${uName} added! 🎉`); };
+  const toggle = async (id) => { const u=unis.find(x=>x.id===id); if (!u) return; if (await toggleUni(id)) add(u.active?`${u.name} disabled`:`${u.name} enabled`); };
+  const addUni = async () => { const uName = sanitizeText(fields.name,100); if (!uName){add("Name required","error");return;} const ok = await addUniversity({name:uName,campus:sanitizeText(fields.campus,100),logo:sanitizeText(fields.logo,8)}); if (!ok) return; setFields({name:"",campus:"",logo:""}); setShowForm(false); add(`${uName} added! 🎉`); };
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between"><div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Universities</h2><p className="text-slate-400 text-sm">Manage universities on the platform</p></div><button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Plus size={15}/>Add University</button></div>
@@ -1693,7 +1775,7 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); });
 
   if (screen==="university") return <UniversitySelector onSelect={u=>{setSelectedUniversity(u);setScreen("auth");}}/>;
-  if (screen==="auth") return <AuthScreen university={selectedUniversity||UNIVERSITIES[0]} onAuth={role=>{ if (onAuthDone) onAuthDone(role,false); else {setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");} add("Welcome back! 👋"); }} onGuest={()=>{ if (onAuthDone) onAuthDone("student",true); else {setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");} add("Browsing as guest","info"); }} onBack={()=>setScreen(session?"app":"university")}/>;
+  if (screen==="auth") return <AuthScreen university={selectedUniversity||(supabaseEnabled?{id:null,name:"ClubSphere",logo:"🎓"}:UNIVERSITIES[0])} onAuth={role=>{ if (onAuthDone) onAuthDone(role,false); else {setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");} add("Welcome back! 👋"); }} onGuest={()=>{ if (onAuthDone) onAuthDone("student",true); else {setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");} add("Browsing as guest","info"); }} onBack={()=>setScreen(session?"app":"university")}/>;
 
   const navItems = NAV[portal];
   const user = PORTAL_USERS[portal];

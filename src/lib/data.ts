@@ -130,3 +130,113 @@ export async function fetchMyApplications(): Promise<UiApp[]> {
     status: STATUS_MAP[r.status] ?? r.status, attended: !!r.attended,
   }));
 }
+
+// ── Universities ─────────────────────────────────────────────────────────────
+export interface UiUniversity { id: string; name: string; campus: string; logo: string; active: boolean; clubs: number; students: number; events: number; }
+
+export async function fetchUniversities(): Promise<UiUniversity[]> {
+  if (!supabase) return [];
+  const [un, st] = await Promise.all([
+    supabase.from("universities").select("*").order("name"),
+    supabase.from("university_stats").select("university_id, clubs, students, events"),
+  ]);
+  if (un.error) throw un.error;
+  const stats: Record<string, any> = {};
+  (st.data ?? []).forEach((s: any) => { stats[s.university_id] = s; });
+  return (un.data ?? []).map((u: any) => ({
+    id: u.id, name: u.name, campus: u.campus ?? "", logo: u.logo ?? "🏫", active: !!u.active,
+    clubs: Number(stats[u.id]?.clubs ?? 0), students: Number(stats[u.id]?.students ?? 0), events: Number(stats[u.id]?.events ?? 0),
+  }));
+}
+
+export async function createUniversityDb(u: { name: string; campus: string; logo: string }): Promise<UiUniversity> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase.from("universities").insert({ name: u.name, campus: u.campus, logo: u.logo || "🏫" }).select("*").single();
+  if (error) throw error;
+  return { id: data.id, name: data.name, campus: data.campus ?? "", logo: data.logo ?? "🏫", active: !!data.active, clubs: 0, students: 0, events: 0 };
+}
+
+export async function setUniversityActive(id: string, active: boolean) {
+  if (!supabase) return;
+  const { error } = await supabase.from("universities").update({ active }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function setMyUniversity(universityId: string) {
+  if (!supabase) return;
+  const { data: u } = await supabase.auth.getUser();
+  if (!u.user) return;
+  await supabase.from("profiles").update({ university_id: universityId }).eq("id", u.user.id).is("university_id", null);
+}
+
+// ── My club (club admin) ─────────────────────────────────────────────────────
+export async function fetchMyClub(): Promise<{ id: string; name: string; followers: number } | null> {
+  if (!supabase) return null;
+  const { data: u } = await supabase.auth.getUser();
+  if (!u.user) return null;
+  const { data: c } = await supabase.from("clubs").select("id,name").eq("admin_id", u.user.id).limit(1).maybeSingle();
+  if (!c) return null;
+  const { data: s } = await supabase.from("club_stats").select("followers").eq("club_id", c.id).maybeSingle();
+  return { id: c.id, name: c.name, followers: Number(s?.followers ?? 0) };
+}
+
+// ── Announcements ────────────────────────────────────────────────────────────
+export interface UiAnnouncement { id: string | number; title: string; content: string; date: string; reach: number; emoji: string; }
+const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+
+export async function fetchAnnouncements(): Promise<UiAnnouncement[]> {
+  if (!supabase) return [];
+  const { data: u } = await supabase.auth.getUser();
+  if (!u.user) return [];
+  const club = await fetchMyClub();
+  let q = supabase.from("announcements").select("*").order("created_at", { ascending: false });
+  q = club ? q.eq("club_id", club.id) : q.eq("created_by", u.user.id);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).map((a: any) => ({ id: a.id, title: a.title, content: a.content ?? "", date: fmtDate(a.created_at), reach: club?.followers ?? 0, emoji: a.emoji ?? "📢" }));
+}
+
+export async function createAnnouncementDb(a: { title: string; content: string; emoji: string }): Promise<UiAnnouncement> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data: u } = await supabase.auth.getUser();
+  const club = await fetchMyClub();
+  const { data, error } = await supabase.from("announcements")
+    .insert({ club_id: club?.id ?? null, title: a.title, content: a.content, emoji: a.emoji, created_by: u.user?.id })
+    .select("*").single();
+  if (error) throw error;
+  return { id: data.id, title: data.title, content: data.content ?? "", date: fmtDate(data.created_at), reach: club?.followers ?? 0, emoji: data.emoji ?? "📢" };
+}
+
+export async function deleteAnnouncementDb(id: string | number) {
+  if (!supabase) return;
+  const { error } = await supabase.from("announcements").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ── Volunteer / recruitment roles ───────────────────────────────────────────
+export interface UiRole { id: string | number; title: string; open: number; applied: number; desc: string; }
+
+export async function fetchRoles(): Promise<UiRole[]> {
+  if (!supabase) return [];
+  const club = await fetchMyClub();
+  if (!club) return [];
+  const { data, error } = await supabase.from("volunteer_roles").select("*").eq("club_id", club.id).order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({ id: r.id, title: r.title, open: r.open_slots ?? 1, applied: 0, desc: r.description ?? "" }));
+}
+
+export async function createRoleDb(r: { title: string; open: number; desc: string }): Promise<UiRole> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const club = await fetchMyClub();
+  if (!club) throw new Error("No club linked to this account");
+  const { data, error } = await supabase.from("volunteer_roles")
+    .insert({ club_id: club.id, title: r.title, description: r.desc, open_slots: r.open }).select("*").single();
+  if (error) throw error;
+  return { id: data.id, title: data.title, open: data.open_slots ?? 1, applied: 0, desc: data.description ?? "" };
+}
+
+export async function deleteRoleDb(id: string | number) {
+  if (!supabase) return;
+  const { error } = await supabase.from("volunteer_roles").delete().eq("id", id);
+  if (error) throw error;
+}

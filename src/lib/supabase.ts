@@ -10,7 +10,7 @@ export const supabase = supabaseEnabled
   : null;
 
 export type Role = "student" | "club" | "faculty" | "techAdmin";
-export interface Profile { id: string; role: Role; full_name: string | null; enrollment: string | null; university_id: string | null; }
+export interface Profile { id: string; role: Role; full_name: string | null; enrollment: string | null; university_id: string | null; status?: "active" | "suspended"; email?: string | null; phone?: string | null; }
 
 export const toE164 = (v: string) => {
   const d = v.replace(/[\s\-()]/g, "");
@@ -33,7 +33,7 @@ export async function verifyOtp(channel: "email" | "phone", value: string, token
 
 export async function getProfile(userId: string): Promise<Profile | null> {
   if (!supabase) return null;
-  const { data } = await supabase.from("profiles").select("id,role,full_name,enrollment,university_id").eq("id", userId).maybeSingle();
+  const { data } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
   return (data as Profile) ?? null;
 }
 
@@ -43,6 +43,7 @@ export async function getCurrentSession(): Promise<{ role: Role; profile: Profil
   const user = data.session?.user;
   if (!user) return null;
   const profile = await getProfile(user.id);
+  if (profile?.status === "suspended") { await supabase.auth.signOut(); return null; }
   return { role: profile?.role ?? "student", profile };
 }
 
