@@ -201,3 +201,27 @@ $$;
 drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own" on public.profiles for update using (id = auth.uid())
   with check (id = auth.uid() and role = public.app_role() and status = public.my_status());
+
+-- ── Batch 6f: event approval workflow + audit detail ─────────────────────────
+alter table public.events drop constraint if exists events_status_check;
+alter table public.events add constraint events_status_check
+  check (status in ('draft','scheduled','pending','published','rejected','cancelled'));
+alter table public.audit_log add column if not exists detail text;
+
+-- Club admins cannot publish or reject their own events: new "published" events
+-- become 'pending', and only faculty/techAdmin can move an event to published/rejected.
+create or replace function public.events_guard_status() returns trigger
+language plpgsql as $$
+begin
+  if public.app_role() = 'club' then
+    if tg_op = 'INSERT' and new.status = 'published' then
+      new.status := 'pending';
+    elsif tg_op = 'UPDATE' and new.status is distinct from old.status and new.status in ('published','rejected') then
+      raise exception 'Only faculty can approve or reject events';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists events_guard_status on public.events;
+create trigger events_guard_status before insert or update on public.events
+  for each row execute function public.events_guard_status();

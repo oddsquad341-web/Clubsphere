@@ -250,11 +250,11 @@ export async function currentUserId(): Promise<string | null> {
   return data.user?.id ?? null;
 }
 
-export async function logAudit(action: string, target: string) {
+export async function logAudit(action: string, target: string, detail?: string) {
   if (!supabase) return;
   const uid = await currentUserId();
   if (!uid) return;
-  await supabase.from("audit_log").insert({ actor_id: uid, action, target }); // best effort
+  await supabase.from("audit_log").insert({ actor_id: uid, action, target, detail: detail ?? null }); // best effort
 }
 
 export async function fetchUsers(): Promise<UiUser[]> {
@@ -305,4 +305,43 @@ export async function assignClubAdmin(clubId: string, userId: string) {
   const { error } = await supabase.from("clubs").update({ admin_id: userId }).eq("id", clubId);
   if (error) throw error;
   await supabase.from("profiles").update({ role: "club" }).eq("id", userId).eq("role", "student");
+}
+
+// ── Faculty approvals + audit trail ─────────────────────────────────────────
+export interface PendingEvent { id: string | number; title: string; club: string; date: string; submitted: string; category: string; }
+
+export async function fetchPendingEvents(): Promise<PendingEvent[]> {
+  if (!supabase) return [];
+  const uid = await currentUserId();
+  const { data: prof } = uid ? await supabase.from("profiles").select("university_id").eq("id", uid).maybeSingle() : { data: null };
+  let q = supabase.from("events").select("id,title,date,category,created_at,clubs!inner(name,university_id)").eq("status", "pending").order("created_at");
+  if (prof?.university_id) q = q.eq("clubs.university_id", prof.university_id); // faculty only see their own university
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).map((e: any) => ({
+    id: e.id, title: e.title, club: e.clubs?.name ?? "", date: e.date ?? "TBD", category: e.category ?? "General",
+    submitted: new Date(e.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+  }));
+}
+
+export async function setEventStatus(id: string | number, status: "published" | "rejected") {
+  if (!supabase) return;
+  const { error } = await supabase.from("events").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
+export interface AuditEntry { id: string | number; action: string; event: string; club: string; by: string; time: string; color: string; }
+
+export async function fetchApprovalAudit(): Promise<AuditEntry[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("audit_log").select("id,action,target,detail,created_at,profiles(full_name,email)")
+    .in("action", ["Approved", "Rejected"]).order("created_at", { ascending: false }).limit(200);
+  if (error) throw error;
+  return (data ?? []).map((a: any) => ({
+    id: a.id, action: a.action, event: a.target ?? "", club: a.detail ?? "",
+    by: a.profiles?.full_name || a.profiles?.email || "Unknown",
+    time: new Date(a.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" }),
+    color: a.action === "Approved" ? "emerald" : "rose",
+  }));
 }

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -526,7 +526,7 @@ function useEvents() {
   };
   const addEventRecord = async (ev) => {
     if (supabaseEnabled) {
-      try { const created = await createEventDb(ev); setEvents(l=>[created,...l]); return true; }
+      try { const created = await createEventDb(ev); setEvents(l=>[created,...l]); return created; }
       catch { add("Couldn't create event","error"); return false; }
     }
     setEvents(l=>[...l,{...ev,id:Date.now(),club:"Tech Society",registered:0,desc:ev.desc||""}]); return true;
@@ -1209,10 +1209,10 @@ function ClubAllEvents() {
   const addEvent = async () => {
     const evTitle = sanitizeText(fields.title,100);
     if (!evTitle){add("Event name required","error");return;}
-    const ok = await addEventRecord({title:evTitle,date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status});
-    if (!ok) return;
+    const created = await addEventRecord({title:evTitle,date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status});
+    if (!created) return;
     setFields({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
-    setShowForm(false); add(`"${evTitle}" created! 🎉`);
+    setShowForm(false); add(created.status==="pending"?`"${evTitle}" sent to faculty for approval`:`"${evTitle}" created! 🎉`);
   };
   const toggleAttend = (eventId, studentId) => {
     setAttendance(a => ({...a, [`${eventId}-${studentId}`]: !a[`${eventId}-${studentId}`]}));
@@ -1482,12 +1482,24 @@ function TeamRecruitmentPage() {
 // ─── FACULTY PAGES ────────────────────────────────────────────────────────────
 
 function FacultyDashboard({ setPage }) {
-  const [pendingList, setPendingList] = useState(PENDING_EVENTS_DATA);
+  const [pendingList, setPendingList] = useState(supabaseEnabled ? [] : PENDING_EVENTS_DATA);
   const [loading, setLoading] = useState(true);
   const { add } = useToast();
-  useEffect(()=>{const t=setTimeout(()=>setLoading(false),700);return()=>clearTimeout(t);},[]);
+  useEffect(()=>{
+    if (!supabaseEnabled) { const t=setTimeout(()=>setLoading(false),700); return()=>clearTimeout(t); }
+    let alive = true;
+    fetchPendingEvents().then(r=>{ if (alive) setPendingList(r); }).catch(()=>add("Couldn't load pending events","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
   if (loading) return <SkeletonPage/>;
-  const resolve = (id, approved) => { setPendingList(l=>l.filter(p=>p.id!==id)); add(approved?"Event approved ✓":"Event rejected","info"); };
+  const resolve = async (id, approved) => {
+    const p = pendingList.find(x=>x.id===id); if (!p) return;
+    if (supabaseEnabled) {
+      try { await setEventStatus(id, approved?"published":"rejected"); logAudit(approved?"Approved":"Rejected", p.title, p.club); }
+      catch { add("Couldn't update event","error"); return; }
+    }
+    setPendingList(l=>l.filter(x=>x.id!==id)); add(approved?"Event approved ✓":"Event rejected","info");
+  };
   return (
     <div className="space-y-5">
       <div className="rounded-2xl p-6 text-white" style={{background:"linear-gradient(135deg,#1e1b4b 0%,#4c1d95 100%)"}}>
@@ -1508,8 +1520,8 @@ function FacultyDashboard({ setPage }) {
             <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{p.title}</p><p className="text-xs text-slate-400">{p.club} · {p.date}</p></div>
             <span className="text-xs bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-2 py-0.5 rounded-full font-medium flex-shrink-0">{p.category}</span>
             <div className="flex gap-2 flex-shrink-0">
-              <button onClick={()=>resolve(p.id,true)} className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 hover:bg-emerald-100 transition"><CheckCircle size={14}/></button>
-              <button onClick={()=>resolve(p.id,false)} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-500 hover:bg-rose-100 transition"><X size={14}/></button>
+              <button onClick={()=>resolve(p.id,true)} aria-label={`Approve ${p.title}`} className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 hover:bg-emerald-100 transition"><CheckCircle size={14}/></button>
+              <button onClick={()=>resolve(p.id,false)} aria-label={`Reject ${p.title}`} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-500 hover:bg-rose-100 transition"><X size={14}/></button>
             </div>
           </div>
         ))}
@@ -1575,11 +1587,22 @@ function EventManagementPage() {
 }
 
 function AuditTrailPage() {
+  const { add } = useToast();
+  const [entries, setEntries] = useState(supabaseEnabled ? [] : AUDIT_LOG);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchApprovalAudit().then(r=>{ if (alive) setEntries(r); }).catch(()=>add("Couldn't load audit trail","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  if (loading) return <SkeletonPage/>;
   return (
     <div className="space-y-5">
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Audit Trail</h2><p className="text-slate-400 text-sm">Complete log of all approval actions</p></div>
       <div className="space-y-3">
-        {AUDIT_LOG.map(entry=>(
+        {entries.length===0&&<EmptyState emoji="📜" title="No approvals yet" desc="Approved and rejected events will appear here."/>}
+        {entries.map(entry=>(
           <Card key={entry.id} className="flex items-center gap-4">
             <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${entry.color==="emerald"?"bg-emerald-100 dark:bg-emerald-900/30":"bg-rose-100 dark:bg-rose-900/30"}`}>
               {entry.color==="emerald"?<CheckCircle size={16} className="text-emerald-600 dark:text-emerald-400"/>:<X size={16} className="text-rose-500 dark:text-rose-400"/>}
