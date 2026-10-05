@@ -133,3 +133,10 @@ create policy "posters delete" on storage.objects for delete using (bucket_id = 
 
 -- To make yourself the first admin (run after you've signed in once):
 -- update public.profiles set role = 'techAdmin' where id = (select id from auth.users where email = 'you@example.com');
+
+-- Registration counts visible to everyone (RLS on registrations hides other students' rows).
+-- Runs with owner rights on purpose; exposes only counts, never who registered.
+create or replace view public.event_stats as
+  select event_id, count(*) filter (where status <> 'cancelled') as registered
+  from public.registrations group by event_id;
+grant select on public.event_stats to anon, authenticated;

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -506,21 +507,59 @@ function CertificateModal({ app, onClose }) {
   );
 }
 
+// Events: live from Supabase when configured, hardcoded demo data otherwise
+function useEvents() {
+  const { add } = useToast();
+  const [events, setEvents] = useState(supabaseEnabled ? [] : EVENTS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchEvents().then(r=>{ if (alive) setEvents(r); }).catch(()=>add("Couldn't load events","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const removeEvent = async (id) => {
+    if (supabaseEnabled) { try { await deleteEventDb(id); } catch { add("Couldn't delete event","error"); return false; } }
+    setEvents(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  const addEventRecord = async (ev) => {
+    if (supabaseEnabled) {
+      try { const created = await createEventDb(ev); setEvents(l=>[created,...l]); return true; }
+      catch { add("Couldn't create event","error"); return false; }
+    }
+    setEvents(l=>[...l,{...ev,id:Date.now(),club:"Tech Society",registered:0,desc:ev.desc||""}]); return true;
+  };
+  return { events, setEvents, loading, removeEvent, addEventRecord };
+}
+
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
 
 function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
   const { add } = useToast();
   const [showPayment, setShowPayment] = useState(false);
-  const isRegistered = MY_APPS_DATA.some(a => a.event===event.title);
+  const [liveReg, setLiveReg] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(()=>{ if (supabaseEnabled&&!isGuest) getMyRegistration(event.id).then(r=>setLiveReg(!!r)).catch(()=>{}); },[event.id,isGuest]);
+  const isRegistered = supabaseEnabled ? liveReg : MY_APPS_DATA.some(a => a.event===event.title);
   const pct = Math.round((event.registered/event.spots)*100);
-  const handleRegister = () => {
+  const full = event.registered>=event.spots;
+  const saveRegistration = async (paid) => {
+    if (!supabaseEnabled) return true;
+    setBusy(true);
+    try { await registerForEvent(event.id, paid); setLiveReg(true); return true; }
+    catch { add("Couldn't register. You may already be registered.","error"); return false; }
+    finally { setBusy(false); }
+  };
+  const handleRegister = async () => {
+    if (busy) return;
+    if (full) { add("This event is full","error"); return; }
     if (event.price > 0) { setShowPayment(true); return; }
-    add(`Registered for ${event.title}! 🎉`); onClose();
+    if (await saveRegistration(false)) { add(`Registered for ${event.title}! 🎉`); onClose(); }
   };
   const handleICS = () => { generateICS(event); add("Calendar event downloaded (.ics)","info"); };
   return (
     <>
-      {showPayment && <PaymentModal event={event} onClose={()=>setShowPayment(false)} onSuccess={onClose}/>}
+      {showPayment && <PaymentModal event={event} onClose={()=>setShowPayment(false)} onSuccess={async ()=>{ await saveRegistration(true); onClose(); }}/>}
       <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{background:"rgba(0,0,0,0.6)"}} onClick={onClose}>
         <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
           <div className="p-5 border-b border-slate-100 dark:border-slate-700">
@@ -726,6 +765,7 @@ function GuestBanner({ onLogin }) {
 // ─── STUDENT PAGES ────────────────────────────────────────────────────────────
 
 function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
+  const { events } = useEvents();
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),900);return()=>clearTimeout(t);},[]);
@@ -746,7 +786,7 @@ function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
       </div>
       <Card>
         <SectionHeader title="Upcoming Events" action="See all" onAction={()=>setPage("clubs")}/>
-        {EVENTS_DATA.filter(e=>e.status==="published").slice(0,3).map(e=>(
+        {events.filter(e=>e.status==="published").slice(0,3).map(e=>(
           <button key={e.id} onClick={()=>setSelectedEvent(e)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-violet-50 dark:hover:bg-violet-900/20 active:scale-98 transition text-left group">
             <div className="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-900/30 flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-105 transition-transform">{e.emoji}</div>
             <div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{e.title}</p><p className="text-xs text-slate-400">{e.club} · {e.date}{e.price>0?` · ₹${e.price}`:""}</p></div>
@@ -829,6 +869,7 @@ function StudentProfile() {
 }
 
 function ExploreClubs({ isGuest, onLoginRequired }) {
+  const { events } = useEvents();
   const [clubs, setClubs] = useState(CLUBS_DATA);
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState("All");
@@ -851,7 +892,7 @@ function ExploreClubs({ isGuest, onLoginRequired }) {
       {filtered.length===0?<EmptyState emoji="🔍" title="No clubs found" desc={`No clubs match "${search}".`} action="Clear filters" onAction={()=>{setSearch("");setCat("All");setLevel("all");}}/>:(
         <div className="grid md:grid-cols-2 gap-4">
           {filtered.map(c=>{
-            const clubEvents=EVENTS_DATA.filter(e=>e.club===c.name&&e.status==="published");
+            const clubEvents=events.filter(e=>e.club===c.name&&e.status==="published");
             return (
               <Card key={c.id} className="hover:shadow-md transition-shadow">
                 <div className="flex items-start gap-3 mb-3">
@@ -963,7 +1004,7 @@ function MessagesPage({ canEdit=false }) {
 // ─── CLUB PAGES ───────────────────────────────────────────────────────────────
 
 function ClubDashboard({ setPage }) {
-  const [events, setEvents] = useState(EVENTS_DATA);
+  const { events, setEvents, removeEvent, addEventRecord } = useEvents();
   const [followers, setFollowers] = useState(FOLLOWERS_DATA);
   const [editEvents, setEditEvents] = useState(false);
   const [editFollowers, setEditFollowers] = useState(false);
@@ -992,7 +1033,7 @@ function ClubDashboard({ setPage }) {
             <span className="text-xl">{e.emoji}</span>
             <div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{e.title}</p><p className="text-xs text-slate-400">{e.date} · {e.registered} registered</p></div>
             <StatusBadge status={e.status}/>
-            {editEvents&&<button onClick={()=>{setEvents(l=>l.filter(x=>x.id!==e.id));add(`"${e.title}" deleted`,"info");}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
+            {editEvents&&<button onClick={()=>{removeEvent(e.id).then(ok=>{if(ok)add(`"${e.title}" deleted`,"info");});}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
           </div>
         ))}
       </Card>
@@ -1012,17 +1053,18 @@ function ClubDashboard({ setPage }) {
 }
 
 function ClubAllEvents() {
-  const [events, setEvents] = useState(EVENTS_DATA);
+  const { events, setEvents, removeEvent, addEventRecord } = useEvents();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [fields, setFields] = useState({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
   const [attendance, setAttendance] = useState({});
   const { add } = useToast();
-  const addEvent = () => {
+  const addEvent = async () => {
     const evTitle = sanitizeText(fields.title,100);
     if (!evTitle){add("Event name required","error");return;}
-    setEvents(l=>[...l,{id:Date.now(),title:evTitle,club:"Tech Society",date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,registered:0,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status}]);
+    const ok = await addEventRecord({title:evTitle,date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status});
+    if (!ok) return;
     setFields({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
     setShowForm(false); add(`"${evTitle}" created! 🎉`);
   };
@@ -1072,7 +1114,7 @@ function ClubAllEvents() {
                   </div>
                   <StatusBadge status={e.status}/>
                   {editing?(
-                    <button onClick={()=>{setEvents(l=>l.filter(x=>x.id!==e.id));add(`"${e.title}" deleted`,"info");}} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={15}/></button>
+                    <button onClick={()=>{removeEvent(e.id).then(ok=>{if(ok)add(`"${e.title}" deleted`,"info");});}} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={15}/></button>
                   ):(
                     <button onClick={()=>setExpandedId(prev=>prev===e.id?null:e.id)} className="flex items-center gap-1 text-xs font-medium text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-700 px-3 py-1.5 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-900/20 transition flex-shrink-0">
                       Manage {isExpanded?<ChevronUp size={13}/>:<ChevronDown size={13}/>}
@@ -1111,7 +1153,7 @@ function ClubAllEvents() {
                     </div>
                     <div className="flex gap-2">
                       <button onClick={()=>{setExpandedId(null);add("Changes saved!");}} className="flex-1 bg-violet-600 text-white py-2 rounded-xl text-sm font-medium hover:bg-violet-700 transition">Save Changes</button>
-                      <button onClick={()=>{setEvents(l=>l.filter(x=>x.id!==e.id));add(`"${e.title}" deleted`,"info");}} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-rose-500 border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition"><Trash2 size={13}/>Delete</button>
+                      <button onClick={()=>{removeEvent(e.id).then(ok=>{if(ok)add(`"${e.title}" deleted`,"info");});}} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-rose-500 border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition"><Trash2 size={13}/>Delete</button>
                     </div>
                   </div>
                 )}
@@ -1329,7 +1371,7 @@ function FacultyDashboard({ setPage }) {
 }
 
 function EventManagementPage() {
-  const [events, setEvents] = useState(EVENTS_DATA);
+  const { events, setEvents, removeEvent, addEventRecord } = useEvents();
   const [tab, setTab] = useState("all");
   const [editing, setEditing] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -1355,7 +1397,7 @@ function EventManagementPage() {
                   <div className="flex-1 min-w-0"><p className="font-semibold text-slate-800 dark:text-slate-200">{e.title}</p><p className="text-xs text-slate-400 mt-0.5">{e.club} · {e.date} · {e.registered}/{e.spots}</p></div>
                   <div className="flex items-center gap-2 flex-shrink-0"><StatusBadge status={e.status}/>{e.price>0&&<span className="text-xs text-amber-600 dark:text-amber-400 font-semibold">₹{e.price}</span>}</div>
                   {editing?(
-                    <button onClick={()=>{setEvents(l=>l.filter(x=>x.id!==e.id));add(`"${e.title}" removed`,"info");}} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={15}/></button>
+                    <button onClick={()=>{removeEvent(e.id).then(ok=>{if(ok)add(`"${e.title}" removed`,"info");});}} className="p-2 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={15}/></button>
                   ):(
                     <button onClick={()=>setExpandedId(prev=>prev===e.id?null:e.id)} className="flex items-center gap-1 text-xs font-medium text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-700 px-3 py-1.5 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-900/20 transition flex-shrink-0">
                       Review {isExpanded?<ChevronUp size={13}/>:<ChevronDown size={13}/>}
