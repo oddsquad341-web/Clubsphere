@@ -180,10 +180,25 @@ function generateICS(event) {
   URL.revokeObjectURL(url);
 }
 
+// ─── SECURITY HELPERS ─────────────────────────────────────────────────────────
+function sanitizeText(v, max = 200) {
+  return String(v ?? "")
+    .replace(/<[^>]*>?/g, "")                 // strip HTML tags
+    .replace(/[\u0000-\u001F\u007F]/g, " ")    // strip control characters
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+const isValidEmail = v => /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']{2,}$/.test(v) && v.length <= 254;
+const normalizePhone = v => v.replace(/[\s\-()]/g, "");
+const isValidPhone = v => /^(\+91)?[6-9]\d{9}$/.test(normalizePhone(v));
+// Prevent CSV/Excel formula injection and escape quotes
+const csvCell = v => { let t = String(v ?? "").replace(/"/g, '""'); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return `"${t}"`; };
+
 function exportCSV(data, filename) {
   if (!data.length) return;
   const headers = Object.keys(data[0]).join(',');
-  const rows = data.map(r => Object.values(r).map(v => `"${v}"`).join(','));
+  const rows = data.map(r => Object.values(r).map(csvCell).join(','));
   const csv = [headers, ...rows].join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -623,12 +638,23 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
   const [showRolePicker, setShowRolePicker] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  useEffect(()=>{ if (cooldown<=0) return; const t=setTimeout(()=>setCooldown(c=>c-1),1000); return ()=>clearTimeout(t); },[cooldown]);
   const bg = isDark?"bg-slate-950":"bg-slate-50";
   const surface = isDark?"bg-slate-800 border-slate-700":"bg-white border-slate-200";
   const text = isDark?"text-white":"text-slate-800";
   const muted = isDark?"text-slate-400":"text-slate-400";
   const inputCls = `w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 ${isDark?"bg-slate-700 border-slate-600 text-white placeholder:text-slate-500":"bg-white border-slate-200 text-slate-800"}`;
-  const handleSend = () => { if (!value){setError(`Enter your ${tab==="email"?"email":"phone"}`);return;} setError(""); setLoading(true); setTimeout(()=>{setLoading(false);setStep("otp");},1000); };
+  const handleSend = () => {
+    if (loading) return;
+    if (cooldown>0){setError(`Please wait ${cooldown}s before requesting another OTP`);return;}
+    const v = sanitizeText(value,254);
+    if (!v){setError(`Enter your ${tab==="email"?"email":"phone"}`);return;}
+    if (tab==="email"&&!isValidEmail(v)){setError("Enter a valid email address");return;}
+    if (tab!=="email"&&!isValidPhone(v)){setError("Enter a valid 10-digit mobile number");return;}
+    setValue(v); setError(""); setLoading(true);
+    setTimeout(()=>{setLoading(false);setStep("otp");setOtp("");setCooldown(60);},1000);
+  };
   const handleVerify = () => { if (otp.length<4){setError("Enter the OTP sent to you");return;} setError(""); setLoading(true); setTimeout(()=>{setLoading(false);setShowRolePicker(true);},800); };
   const roles = [{id:"student",label:"Student",icon:User,desc:"Explore & register for events"},{id:"club",label:"Club Admin",icon:Users,desc:"Manage your club & events"},{id:"faculty",label:"Faculty Coordinator",icon:BookOpen,desc:"Oversee and approve events"},{id:"techAdmin",label:"Tech Admin",icon:Shield,desc:"Platform-level administration"}];
   if (showRolePicker) return (
@@ -659,7 +685,7 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
             <div><input value={otp} onChange={e=>{setOtp(e.target.value.replace(/\D/g,"").slice(0,6));setError("");}} placeholder="Enter 6-digit OTP" className={`${inputCls} text-center tracking-widest font-bold text-lg`}/>{error&&<p className="text-xs text-rose-500 mt-1.5 flex items-center gap-1 justify-center"><AlertTriangle size={11}/>{error}</p>}</div>
             <button onClick={handleVerify} disabled={loading} className="w-full bg-violet-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-violet-700 transition disabled:opacity-60 flex items-center justify-center gap-2">{loading?<><RefreshCw size={14} className="animate-spin"/>Verifying…</>:"Verify & Continue"}</button>
             <button onClick={()=>setStep("input")} className={`w-full text-sm transition ${isDark?"text-slate-500 hover:text-slate-300":"text-slate-400 hover:text-slate-600"}`}>← Change {tab==="email"?"email":"number"}</button>
-            <p className={`text-center text-xs ${muted}`}>Didn't receive it? <button className="text-violet-500 font-medium hover:underline">Resend OTP</button></p>
+            <p className={`text-center text-xs ${muted}`}>Didn't receive it? {cooldown>0?<span className="font-medium">Resend in {cooldown}s</span>:<button onClick={handleSend} disabled={loading} className="text-violet-500 font-medium hover:underline disabled:opacity-60">Resend OTP</button>}</p>
           </div>
         )}
       </div>
@@ -974,10 +1000,11 @@ function ClubAllEvents() {
   const [attendance, setAttendance] = useState({});
   const { add } = useToast();
   const addEvent = () => {
-    if (!fields.title){add("Event name required","error");return;}
-    setEvents(l=>[...l,{id:Date.now(),title:fields.title,club:"Tech Society",date:fields.date||"TBD",time:"TBD",venue:fields.venue||"TBD",category:fields.category||"General",spots:parseInt(fields.spots)||100,registered:0,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status}]);
+    const evTitle = sanitizeText(fields.title,100);
+    if (!evTitle){add("Event name required","error");return;}
+    setEvents(l=>[...l,{id:Date.now(),title:evTitle,club:"Tech Society",date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,registered:0,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status}]);
     setFields({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
-    setShowForm(false); add(`"${fields.title}" created! 🎉`);
+    setShowForm(false); add(`"${evTitle}" created! 🎉`);
   };
   const toggleAttend = (eventId, studentId) => {
     setAttendance(a => ({...a, [`${eventId}-${studentId}`]: !a[`${eventId}-${studentId}`]}));
@@ -1126,8 +1153,9 @@ function AnnouncementsPage() {
   const [fields, setFields] = useState({title:"",content:"",emoji:"📢"});
   const { add } = useToast();
   const post = () => {
-    if (!fields.title){add("Title required","error");return;}
-    setAnnouncements(l=>[{id:Date.now(),title:fields.title,content:fields.content,date:new Date().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}),reach:156,emoji:fields.emoji},...l]);
+    const anTitle = sanitizeText(fields.title,120);
+    if (!anTitle){add("Title required","error");return;}
+    setAnnouncements(l=>[{id:Date.now(),title:anTitle,content:sanitizeText(fields.content,1000),date:new Date().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}),reach:156,emoji:fields.emoji},...l]);
     setFields({title:"",content:"",emoji:"📢"}); setShowForm(false); add("Announcement sent to all followers! 📢");
   };
   return (
@@ -1221,7 +1249,7 @@ function TeamRecruitmentPage() {
   const [editing, setEditing] = useState(false);
   const [fields, setFields] = useState({title:"",open:"",desc:""});
   const { add } = useToast();
-  const addRole = () => { if (!fields.title){add("Title required","error");return;} setRoles(l=>[...l,{id:Date.now(),title:fields.title,open:parseInt(fields.open)||1,applied:0,desc:fields.desc}]); setFields({title:"",open:"",desc:""}); setShowForm(false); add(`"${fields.title}" posted! 🎉`); };
+  const addRole = () => { const rTitle = sanitizeText(fields.title,100); if (!rTitle){add("Title required","error");return;} setRoles(l=>[...l,{id:Date.now(),title:rTitle,open:parseInt(fields.open)||1,applied:0,desc:sanitizeText(fields.desc,500)}]); setFields({title:"",open:"",desc:""}); setShowForm(false); add(`"${rTitle}" posted! 🎉`); };
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -1419,7 +1447,7 @@ function TechAdminUniversities() {
   const [fields, setFields] = useState({name:"",campus:"",logo:""});
   const { add } = useToast();
   const toggle = (id) => { const u=unis.find(x=>x.id===id); setUnis(l=>l.map(x=>x.id===id?{...x,active:!x.active}:x)); add(u?.active?`${u.name} disabled`:`${u.name} enabled`); };
-  const addUni = () => { if (!fields.name){add("Name required","error");return;} setUnis(l=>[...l,{id:Date.now().toString(),name:fields.name,campus:fields.campus,logo:fields.logo||"🏫",clubs:0,students:0,events:0,active:true}]); setFields({name:"",campus:"",logo:""}); setShowForm(false); add(`${fields.name} added! 🎉`); };
+  const addUni = () => { const uName = sanitizeText(fields.name,100); if (!uName){add("Name required","error");return;} setUnis(l=>[...l,{id:Date.now().toString(),name:uName,campus:sanitizeText(fields.campus,100),logo:fields.logo||"🏫",clubs:0,students:0,events:0,active:true}]); setFields({name:"",campus:"",logo:""}); setShowForm(false); add(`${uName} added! 🎉`); };
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between"><div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Universities</h2><p className="text-slate-400 text-sm">Manage universities on the platform</p></div><button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Plus size={15}/>Add University</button></div>
@@ -1500,11 +1528,56 @@ const PORTAL_USERS = {
   techAdmin:{name:"Tech Team",sub:"Platform Administrator"},
 };
 
-function AppShell() {
-  const [screen, setScreen] = useState("university");
+// ─── SESSION TIMEOUT ──────────────────────────────────────────────────────────
+const IDLE_LIMIT_MS = 30 * 60 * 1000;   // sign out after 30 min of inactivity
+const IDLE_WARN_MS = 2 * 60 * 1000;     // warn 2 min before
+
+function useIdleTimeout(active, onTimeout) {
+  const [warning, setWarning] = useState(false);
+  const [remaining, setRemaining] = useState(0);
+  const last = useRef(Date.now());
+  const warned = useRef(false);
+  const cb = useRef(onTimeout);
+  cb.current = onTimeout;
+  useEffect(() => {
+    if (!active) { warned.current = false; setWarning(false); return; }
+    last.current = Date.now();
+    const bump = () => { if (!warned.current) last.current = Date.now(); };
+    const evs = ["mousemove", "keydown", "click", "touchstart", "scroll"];
+    evs.forEach(e => window.addEventListener(e, bump, { passive: true }));
+    const tick = setInterval(() => {
+      const idle = Date.now() - last.current;
+      if (idle >= IDLE_LIMIT_MS) { warned.current = false; setWarning(false); cb.current(); }
+      else if (idle >= IDLE_LIMIT_MS - IDLE_WARN_MS) { warned.current = true; setWarning(true); setRemaining(Math.ceil((IDLE_LIMIT_MS - idle) / 1000)); }
+    }, 1000);
+    return () => { evs.forEach(e => window.removeEventListener(e, bump)); clearInterval(tick); };
+  }, [active]);
+  const stay = useCallback(() => { last.current = Date.now(); warned.current = false; setWarning(false); }, []);
+  return { warning, remaining, stay };
+}
+
+function SessionWarning({ remaining, onStay, onLogout }) {
+  const m = Math.floor(remaining / 60), sec = String(remaining % 60).padStart(2, "0");
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4" role="alertdialog" aria-modal="true" aria-labelledby="sess-title">
+      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm text-center">
+        <div className="w-12 h-12 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-3"><AlertTriangle size={22} className="text-amber-600"/></div>
+        <h3 id="sess-title" className="font-bold text-slate-800 dark:text-white text-lg">Still there?</h3>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">You'll be signed out for inactivity in <span className="font-semibold tabular-nums">{m}:{sec}</span>.</p>
+        <div className="flex gap-2 mt-5">
+          <button onClick={onLogout} className="flex-1 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 py-2.5 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition">Sign out</button>
+          <button onClick={onStay} autoFocus className="flex-1 bg-violet-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-violet-700 transition">Stay signed in</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppShell({ session = null, onAuthDone, onLogout }) {
+  const [screen, setScreen] = useState(session ? "app" : "university");
   const [selectedUniversity, setSelectedUniversity] = useState(null);
-  const [isGuest, setIsGuest] = useState(false);
-  const [portal, setPortal] = useState("student");
+  const [isGuest, setIsGuest] = useState(session?.isGuest ?? false);
+  const [portal, setPortal] = useState(session?.role ?? "student");
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -1514,10 +1587,11 @@ function AppShell() {
   const unreadNotifs = NOTIFICATIONS_DATA.filter(n=>!n.read).length;
   const goToPage = useCallback((p)=>{setPage(p);setSidebarOpen(false);},[]);
   const handleLoginRequired = useCallback(()=>{setScreen("auth");},[]);
-  const switchPortal = (p)=>{setPortal(p);setPage("dashboard");setSidebarOpen(false);};
+  const handleLogout = useCallback(()=>{ if (onLogout) onLogout(); else setScreen("university"); },[onLogout]);
+  const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); });
 
   if (screen==="university") return <UniversitySelector onSelect={u=>{setSelectedUniversity(u);setScreen("auth");}}/>;
-  if (screen==="auth") return <AuthScreen university={selectedUniversity||UNIVERSITIES[0]} onAuth={role=>{setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");add("Welcome back! 👋");}} onGuest={()=>{setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");add("Browsing as guest","info");}} onBack={()=>setScreen("university")}/>;
+  if (screen==="auth") return <AuthScreen university={selectedUniversity||UNIVERSITIES[0]} onAuth={role=>{ if (onAuthDone) onAuthDone(role,false); else {setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");} add("Welcome back! 👋"); }} onGuest={()=>{ if (onAuthDone) onAuthDone("student",true); else {setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");} add("Browsing as guest","info"); }} onBack={()=>setScreen(session?"app":"university")}/>;
 
   const navItems = NAV[portal];
   const user = PORTAL_USERS[portal];
@@ -1566,10 +1640,11 @@ function AppShell() {
   return (
     <div className={`flex flex-col h-screen overflow-hidden ${isDark?"dark bg-slate-900":"bg-slate-50"}`}>
       {notifOpen&&<NotificationsPanel onClose={()=>setNotifOpen(false)}/>}
+      {idle.warning&&<SessionWarning remaining={idle.remaining} onStay={idle.stay} onLogout={handleLogout}/>}
       <div className="flex-shrink-0 bg-indigo-950 dark:bg-slate-950 flex items-center justify-center gap-1 py-2 px-4">
         <span className="text-indigo-500 text-xs mr-2 font-medium hidden sm:block">Portal:</span>
-        {PORTALS.filter(p=>!isGuest||p.id==="student").map(p=>{const Icon=p.icon;return(<button key={p.id} onClick={()=>switchPortal(p.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${portal===p.id?"bg-violet-600 text-white shadow-lg":"text-indigo-300 hover:text-white hover:bg-indigo-800"}`}><Icon size={13}/><span className="hidden sm:inline">{p.label}</span><span className="sm:hidden">{p.label.split(" ")[0]}</span></button>);})}
-        <button onClick={()=>setScreen("university")} className="ml-3 flex items-center gap-1 text-indigo-400 hover:text-white text-xs transition"><LogOut size={13}/><span className="hidden sm:inline">Logout</span></button>
+        {PORTALS.filter(p=>p.id===portal).map(p=>{const Icon=p.icon;return(<span key={p.id} aria-current="true" className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-violet-600 text-white shadow-lg"><Icon size={13}/><span className="hidden sm:inline">{p.label}</span><span className="sm:hidden">{p.label.split(" ")[0]}</span></span>);})}
+        <button onClick={handleLogout} className="ml-3 flex items-center gap-1 text-indigo-400 hover:text-white text-xs transition"><LogOut size={13}/><span className="hidden sm:inline">Logout</span></button>
       </div>
       {isGuest&&<GuestBanner onLogin={handleLoginRequired}/>}
       <div className="flex flex-1 overflow-hidden">
@@ -1603,7 +1678,13 @@ function AppShell() {
 
 function RootRouter() {
   const [screen, setScreen] = useState("landing");
-  const [pendingRole, setPendingRole] = useState(null);
+  const [session, setSession] = useState(null); // { role, isGuest } — replaced by Supabase session in Batch 6
+
+  const handleAuthDone = (role, isGuest) => {
+    setSession({ role, isGuest });
+    setScreen(isGuest ? "app" : "onboarding");
+  };
+  const handleLogout = () => { setSession(null); setScreen("university"); };
 
   const screens = {
     landing: <LandingPage
@@ -1615,20 +1696,9 @@ function RootRouter() {
     pricing: <PricingPage onBack={()=>setScreen("landing")} onGetStarted={()=>setScreen("university")}/>,
     privacy: <PrivacyPage onBack={()=>setScreen("landing")}/>,
     terms: <TermsPage onBack={()=>setScreen("landing")}/>,
-    onboarding: <OnboardingFlow role={pendingRole||"student"} onDone={()=>setScreen("app")}/>,
-    university: <AppShell
-      forceScreen="university"
-      onAuthDone={(role)=>{setPendingRole(role);setScreen("onboarding");}}
-      onGuest={()=>setScreen("app")}
-      onBack={()=>setScreen("landing")}
-    />,
-    app: <AppShell
-      forceScreen="app"
-      initialRole={pendingRole}
-      onAuthDone={(role)=>{setPendingRole(role);setScreen("onboarding");}}
-      onGuest={()=>setScreen("app")}
-      onBack={()=>setScreen("landing")}
-    />,
+    onboarding: <OnboardingFlow role={session?.role||"student"} onDone={()=>setScreen("app")}/>,
+    university: <AppShell key="anon" onAuthDone={handleAuthDone}/>,
+    app: <AppShell key={`${session?.role}-${session?.isGuest}`} session={session} onAuthDone={handleAuthDone} onLogout={handleLogout}/>,
   };
   return screens[screen] || screens.landing;
 }
