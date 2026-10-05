@@ -240,3 +240,69 @@ export async function deleteRoleDb(id: string | number) {
   const { error } = await supabase.from("volunteer_roles").delete().eq("id", id);
   if (error) throw error;
 }
+
+// ── Tech Admin: users, clubs, audit ─────────────────────────────────────────
+export interface UiUser { id: string | number; name: string; email: string; role: string; university: string; status: string; joined: string; }
+
+export async function currentUserId(): Promise<string | null> {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
+
+export async function logAudit(action: string, target: string) {
+  if (!supabase) return;
+  const uid = await currentUserId();
+  if (!uid) return;
+  await supabase.from("audit_log").insert({ actor_id: uid, action, target }); // best effort
+}
+
+export async function fetchUsers(): Promise<UiUser[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("profiles").select("id,role,full_name,email,phone,status,created_at,universities(name)")
+    .order("created_at", { ascending: false }).limit(500);
+  if (error) throw error;
+  return (data ?? []).map((p: any) => ({
+    id: p.id, name: p.full_name || p.email || p.phone || "New user", email: p.email || p.phone || "—",
+    role: p.role, university: p.universities?.name ?? "—", status: p.status,
+    joined: new Date(p.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" }),
+  }));
+}
+
+export async function updateUserRole(id: string | number, role: string) {
+  if (!supabase) return;
+  const { error } = await supabase.from("profiles").update({ role }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function setUserStatus(id: string | number, status: "active" | "suspended") {
+  if (!supabase) return;
+  const { error } = await supabase.from("profiles").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
+export interface AdminClub { id: string; name: string; category: string; emoji: string; level: string; admin_id: string | null; university: string; }
+
+export async function fetchAdminClubs(): Promise<AdminClub[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.from("clubs").select("id,name,category,emoji,level,admin_id,universities(name)").order("name");
+  if (error) throw error;
+  return (data ?? []).map((c: any) => ({ id: c.id, name: c.name, category: c.category ?? "General", emoji: c.emoji ?? "🏆", level: c.level ?? "university", admin_id: c.admin_id, university: c.universities?.name ?? "—" }));
+}
+
+export async function createClubDb(c: { name: string; category: string; emoji: string; level: string; university_id: string | null }) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { error } = await supabase.from("clubs").insert({ name: c.name, category: c.category || "General", emoji: c.emoji || "🏆", level: c.level, university_id: c.university_id || null });
+  if (error) throw error;
+}
+
+// Makes the user the club's admin (and promotes a student to the club role). One club per admin.
+export async function assignClubAdmin(clubId: string, userId: string) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data: other } = await supabase.from("clubs").select("id,name").eq("admin_id", userId).neq("id", clubId).limit(1).maybeSingle();
+  if (other) throw new Error(`Already the admin of ${other.name}`);
+  const { error } = await supabase.from("clubs").update({ admin_id: userId }).eq("id", clubId);
+  if (error) throw error;
+  await supabase.from("profiles").update({ role: "club" }).eq("id", userId).eq("role", "student");
+}

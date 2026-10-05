@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -641,6 +641,33 @@ function useRoles() {
     setRoles(l=>l.filter(x=>x.id!==id)); return true;
   };
   return { roles, loading, addRoleRecord, removeRole };
+}
+
+function useUsers() {
+  const { add } = useToast();
+  const [users, setUsers] = useState(supabaseEnabled ? [] : PLATFORM_USERS);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  const [me, setMe] = useState(null);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    currentUserId().then(id=>{ if (alive) setMe(id); });
+    fetchUsers().then(r=>{ if (alive) setUsers(r); }).catch(()=>add("Couldn't load users","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const toggleUserStatus = async (id) => {
+    const u = users.find(x=>x.id===id); if (!u||id===me) return null;
+    const next = u.status==="active" ? "suspended" : "active";
+    if (supabaseEnabled) { try { await setUserStatus(id, next); logAudit(next==="suspended"?"Suspended user":"Restored user", u.email); } catch { add("Couldn't update user","error"); return null; } }
+    setUsers(l=>l.map(x=>x.id===id?{...x,status:next}:x)); return next;
+  };
+  const changeUserRole = async (id, role) => {
+    const u = users.find(x=>x.id===id); if (!u||id===me||u.role===role) return false;
+    if (role==="techAdmin"&&!window.confirm(`Give ${u.name} full Tech Admin access?`)) return false;
+    if (supabaseEnabled) { try { await updateUserRole(id, role); logAudit(`Changed role to ${role}`, u.email); } catch { add("Couldn't change role","error"); return false; } }
+    setUsers(l=>l.map(x=>x.id===id?{...x,role}:x)); return true;
+  };
+  return { users, loading, me, toggleUserStatus, changeUserRole };
 }
 
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
@@ -1642,20 +1669,78 @@ function TechAdminUniversities() {
 }
 
 function TechAdminUsers() {
-  const [users, setUsers] = useState(PLATFORM_USERS);
+  const { users, loading, me, toggleUserStatus, changeUserRole } = useUsers();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const { add } = useToast();
-  const toggleStatus = (id) => { const u=users.find(x=>x.id===id); setUsers(l=>l.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x)); add(u?.status==="active"?`${u.name} suspended`:`${u.name} restored`,"info"); };
+  const toggleStatus = async (id) => { const u=users.find(x=>x.id===id); const next = await toggleUserStatus(id); if (next) add(next==="suspended"?`${u.name} suspended`:`${u.name} restored`,"info"); };
   const filtered = users.filter(u=>(roleFilter==="all"||u.role===roleFilter)&&(u.name.toLowerCase().includes(search.toLowerCase())||u.email.toLowerCase().includes(search.toLowerCase())));
   const roleBadge = {student:"bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",faculty:"bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",club:"bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300",techAdmin:"bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300"};
+  if (loading) return <SkeletonPage/>;
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between"><div><h2 className="text-xl font-bold text-slate-800 dark:text-white">User Management</h2><p className="text-slate-400 text-sm">{users.length} users on the platform</p></div><button onClick={()=>{exportCSV(users,"users.csv");add("Users CSV exported!","info");}} className="flex items-center gap-1.5 text-sm text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-700 px-3 py-2 rounded-xl hover:bg-violet-50 dark:hover:bg-violet-900/20 transition font-medium"><Download size={14}/>CSV</button></div>
       <div className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by name or email…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"/></div>
-      <div className="flex gap-2 flex-wrap">{[["all","All"],["student","Students"],["faculty","Faculty"],["club","Clubs"]].map(([val,label])=>(<button key={val} onClick={()=>setRoleFilter(val)} className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${roleFilter===val?"bg-violet-600 text-white":"bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"}`}>{label}</button>))}</div>
+      <div className="flex gap-2 flex-wrap">{[["all","All"],["student","Students"],["faculty","Faculty"],["club","Clubs"],["techAdmin","Admins"]].map(([val,label])=>(<button key={val} onClick={()=>setRoleFilter(val)} className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${roleFilter===val?"bg-violet-600 text-white":"bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"}`}>{label}</button>))}</div>
       {filtered.length===0?<EmptyState emoji="🔍" title="No users found" desc={`No users match "${search}".`} action="Clear" onAction={()=>{setSearch("");setRoleFilter("all");}}/>:(
-        <div className="space-y-3">{filtered.map(u=>(<Card key={u.id} className="flex items-center gap-4"><AvatarCircle name={u.name}/><div className="flex-1 min-w-0"><div className="flex items-center gap-2 flex-wrap"><p className="font-medium text-slate-800 dark:text-slate-200 text-sm">{u.name}</p><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${roleBadge[u.role]||"bg-slate-100 text-slate-600"}`}>{u.role}</span></div><p className="text-xs text-slate-400">{u.email}</p><p className="text-xs text-slate-400">{u.university} · Joined {u.joined}</p></div><div className="flex items-center gap-2 flex-shrink-0"><StatusBadge status={u.status}/><button onClick={()=>toggleStatus(u.id)} className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition active:scale-95 ${u.status==="active"?"text-rose-500 border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-900/20":"text-emerald-600 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}>{u.status==="active"?"Suspend":"Restore"}</button></div></Card>))}</div>
+        <div className="space-y-3">{filtered.map(u=>(<Card key={u.id} className="flex items-center gap-4 flex-wrap"><AvatarCircle name={u.name}/><div className="flex-1 min-w-0"><div className="flex items-center gap-2 flex-wrap"><p className="font-medium text-slate-800 dark:text-slate-200 text-sm">{u.name}</p><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${roleBadge[u.role]||"bg-slate-100 text-slate-600"}`}>{u.role}</span></div><p className="text-xs text-slate-400">{u.email}</p><p className="text-xs text-slate-400">{u.university} · Joined {u.joined}</p></div><div className="flex items-center gap-2 flex-shrink-0"><select aria-label={`Role for ${u.name}`} value={u.role} disabled={u.id===me} onChange={e=>changeUserRole(u.id,e.target.value).then(ok=>{if(ok)add(`${u.name} is now ${e.target.value}`,"info");})} className="text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50">{[["student","Student"],["club","Club Admin"],["faculty","Faculty"],["techAdmin","Tech Admin"]].map(([v,l])=>(<option key={v} value={v}>{l}</option>))}</select><StatusBadge status={u.status}/><button onClick={()=>toggleStatus(u.id)} disabled={u.id===me} className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition active:scale-95 disabled:opacity-40 ${u.status==="active"?"text-rose-500 border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-900/20":"text-emerald-600 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"}`}>{u.status==="active"?"Suspend":"Restore"}</button></div></Card>))}</div>
+      )}
+    </div>
+  );
+}
+
+function TechAdminClubs() {
+  const { add } = useToast();
+  const [clubs, setClubs] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [unis, setUnis] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [fields, setFields] = useState({name:"",category:"",emoji:"",level:"university",university_id:""});
+  const load = useCallback(async ()=>{
+    try { const [c,u,un] = await Promise.all([fetchAdminClubs(),fetchUsers(),fetchUniversities()]); setClubs(c); setUsers(u); setUnis(un); }
+    catch { add("Couldn't load clubs","error"); }
+    finally { setLoading(false); }
+  },[]);
+  useEffect(()=>{ load(); },[load]);
+  const candidates = users.filter(u=>u.role!=="techAdmin"&&u.status==="active");
+  const createClub = async () => {
+    const name = sanitizeText(fields.name,80);
+    if (!name){add("Club name required","error");return;}
+    try { await createClubDb({name,category:sanitizeText(fields.category,40),emoji:sanitizeText(fields.emoji,8),level:fields.level,university_id:fields.university_id}); }
+    catch { add("Couldn't create club","error"); return; }
+    logAudit("Created club", name);
+    setFields({name:"",category:"",emoji:"",level:"university",university_id:""}); setShowForm(false); add(`${name} created! 🎉`); load();
+  };
+  const assign = async (club, userId) => {
+    if (!userId) return;
+    const u = users.find(x=>x.id===userId);
+    if (!window.confirm(`Make ${u?.name} the admin of ${club.name}?`)) return;
+    try { await assignClubAdmin(club.id, userId); }
+    catch (e) { add(e?.message?.startsWith("Already")?e.message:"Couldn't assign admin","error"); return; }
+    logAudit(`Assigned club admin (${club.name})`, u?.email||"");
+    add(`${u?.name} is now admin of ${club.name}`); load();
+  };
+  const inputCls = "w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400";
+  if (loading) return <SkeletonPage/>;
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between"><div><h2 className="text-xl font-bold text-slate-800 dark:text-white">All Clubs</h2><p className="text-slate-400 text-sm">{clubs.length} clubs · create clubs and assign their admins</p></div><button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Plus size={14}/>New Club</button></div>
+      {showForm&&(<Card className="border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20"><div className="flex justify-between mb-3"><h3 className="font-semibold text-slate-800 dark:text-slate-200">New Club</h3><button onClick={()=>setShowForm(false)} className="text-slate-400 p-1" aria-label="Close"><X size={16}/></button></div>
+        <div className="grid md:grid-cols-2 gap-3 mb-3">
+          {[["Club Name","name"],["Category","category"],["Emoji","emoji"]].map(([label,key])=>(<div key={key}><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">{label}</label><input value={fields[key]} onChange={e=>setFields(f=>({...f,[key]:e.target.value}))} className={inputCls}/></div>))}
+          <div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Level</label><select value={fields.level} onChange={e=>setFields(f=>({...f,level:e.target.value}))} className={inputCls}><option value="university">University</option><option value="institute">Institute</option></select></div>
+          <div className="md:col-span-2"><label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">University</label><select value={fields.university_id} onChange={e=>setFields(f=>({...f,university_id:e.target.value}))} className={inputCls}><option value="">Select university…</option>{unis.map(u=>(<option key={u.id} value={u.id}>{u.name}</option>))}</select></div>
+        </div>
+        <button onClick={createClub} className="bg-violet-600 text-white px-5 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium">Create Club</button>
+      </Card>)}
+      {clubs.length===0?<EmptyState emoji="🏆" title="No clubs yet" desc="Create the first club, then assign an admin." action="New Club" onAction={()=>setShowForm(true)}/>:(
+        <div className="space-y-3">{clubs.map(c=>{ const admin = users.find(u=>u.id===c.admin_id); return (
+          <Card key={c.id}><div className="flex items-start gap-3 flex-wrap">
+            <div className="w-11 h-11 rounded-xl bg-violet-50 dark:bg-violet-900/30 flex items-center justify-center text-xl flex-shrink-0">{c.emoji}</div>
+            <div className="flex-1 min-w-0"><p className="font-semibold text-slate-800 dark:text-slate-200">{c.name}</p><p className="text-xs text-slate-400">{c.category} · {c.university} · {c.level}</p><p className="text-xs mt-1 text-slate-500 dark:text-slate-400">Admin: {admin?<span className="font-medium">{admin.name}</span>:<span className="text-amber-600 dark:text-amber-400">none assigned</span>}</p></div>
+            <select aria-label={`Assign admin for ${c.name}`} value="" onChange={e=>assign(c,e.target.value)} className="text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 max-w-[11rem]"><option value="">{admin?"Change admin…":"Assign admin…"}</option>{candidates.map(u=>(<option key={u.id} value={u.id}>{u.name} ({u.email})</option>))}</select>
+          </div></Card>); })}</div>
       )}
     </div>
   );
@@ -1814,7 +1899,7 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
       if (page==="dashboard") return <TechAdminDashboard setPage={goToPage}/>;
       if (page==="universities") return <TechAdminUniversities/>;
       if (page==="users") return <TechAdminUsers/>;
-      if (page==="clubs") return <ExploreClubs isGuest={false} onLoginRequired={()=>{}}/>;
+      if (page==="clubs") return supabaseEnabled ? <TechAdminClubs/> : <ExploreClubs isGuest={false} onLoginRequired={()=>{}}/>;
       if (page==="analytics") return <TechAdminAnalytics/>;
       if (page==="settings") return <TechAdminSettings/>;
     }

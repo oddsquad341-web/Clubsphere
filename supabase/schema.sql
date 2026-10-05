@@ -185,3 +185,19 @@ create or replace view public.university_stats as
             where c.university_id = u.id and e.status = 'published') as events
   from public.universities u;
 grant select on public.university_stats to anon, authenticated;
+
+-- ── Batch 6e: user admin + hardened roles ────────────────────────────────────
+-- Suspended accounts lose organiser/admin powers immediately (app_role() returns null)
+create or replace function public.app_role() returns text
+language sql stable security definer set search_path = public as $$
+  select role from public.profiles where id = auth.uid() and status = 'active'
+$$;
+create or replace function public.my_status() returns text
+language sql stable security definer set search_path = public as $$
+  select status from public.profiles where id = auth.uid()
+$$;
+
+-- users may edit their own profile but never role or status (stops self-unsuspend / self-promote)
+drop policy if exists "profiles update own" on public.profiles;
+create policy "profiles update own" on public.profiles for update using (id = auth.uid())
+  with check (id = auth.uid() and role = public.app_role() and status = public.my_status());
