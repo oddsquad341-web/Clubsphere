@@ -140,3 +140,24 @@ create or replace view public.event_stats as
   select event_id, count(*) filter (where status <> 'cancelled') as registered
   from public.registrations group by event_id;
 grant select on public.event_stats to anon, authenticated;
+
+-- ── Batch 6c: clubs + follows ────────────────────────────────────────────────
+alter table public.clubs add column if not exists level text default 'university' check (level in ('university','institute'));
+
+create table if not exists public.club_follows (
+  club_id uuid not null references public.clubs(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz default now(),
+  primary key (club_id, student_id)
+);
+alter table public.club_follows enable row level security;
+create policy "follows own" on public.club_follows for all using (student_id = auth.uid()) with check (student_id = auth.uid());
+create policy "follows organiser read" on public.club_follows for select using (public.app_role() in ('club','faculty','techAdmin'));
+
+-- follower + published-event counts for everyone (counts only)
+create or replace view public.club_stats as
+  select c.id as club_id,
+         (select count(*) from public.club_follows f where f.club_id = c.id) as followers,
+         (select count(*) from public.events e where e.club_id = c.id and e.status = 'published') as events
+  from public.clubs c;
+grant select on public.club_stats to anon, authenticated;

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -512,12 +512,14 @@ function useEvents() {
   const { add } = useToast();
   const [events, setEvents] = useState(supabaseEnabled ? [] : EVENTS_DATA);
   const [loading, setLoading] = useState(supabaseEnabled);
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{ const f=()=>setTick(t=>t+1); window.addEventListener("cs:registrations-changed",f); return ()=>window.removeEventListener("cs:registrations-changed",f); },[]);
   useEffect(()=>{
     if (!supabaseEnabled) return;
     let alive = true;
     fetchEvents().then(r=>{ if (alive) setEvents(r); }).catch(()=>add("Couldn't load events","error")).finally(()=>{ if (alive) setLoading(false); });
     return ()=>{ alive = false; };
-  },[]);
+  },[tick]);
   const removeEvent = async (id) => {
     if (supabaseEnabled) { try { await deleteEventDb(id); } catch { add("Couldn't delete event","error"); return false; } }
     setEvents(l=>l.filter(x=>x.id!==id)); return true;
@@ -530,6 +532,40 @@ function useEvents() {
     setEvents(l=>[...l,{...ev,id:Date.now(),club:"Tech Society",registered:0,desc:ev.desc||""}]); return true;
   };
   return { events, setEvents, loading, removeEvent, addEventRecord };
+}
+
+function useClubs() {
+  const { add } = useToast();
+  const [clubs, setClubs] = useState(supabaseEnabled ? [] : CLUBS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchClubs().then(r=>{ if (alive) setClubs(r); }).catch(()=>add("Couldn't load clubs","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const toggleFollowClub = async (id) => {
+    const club = clubs.find(c=>c.id===id); if (!club) return null;
+    if (supabaseEnabled) { try { await setFollow(id, !club.following); } catch { add("Couldn't update follow","error"); return null; } }
+    setClubs(l=>l.map(c=>c.id===id?{...c,following:!c.following,members:c.members+(c.following?-1:1)}:c));
+    return !club.following;
+  };
+  return { clubs, setClubs, loading, toggleFollowClub };
+}
+
+function useMyApps() {
+  const { add } = useToast();
+  const [apps, setApps] = useState(supabaseEnabled ? [] : MY_APPS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{ const f=()=>setTick(t=>t+1); window.addEventListener("cs:registrations-changed",f); return ()=>window.removeEventListener("cs:registrations-changed",f); },[]);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchMyApplications().then(r=>{ if (alive) setApps(r); }).catch(()=>add("Couldn't load your applications","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[tick]);
+  return { apps, loading };
 }
 
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
@@ -546,7 +582,7 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
   const saveRegistration = async (paid) => {
     if (!supabaseEnabled) return true;
     setBusy(true);
-    try { await registerForEvent(event.id, paid); setLiveReg(true); return true; }
+    try { await registerForEvent(event.id, paid); setLiveReg(true); window.dispatchEvent(new Event("cs:registrations-changed")); return true; }
     catch { add("Couldn't register. You may already be registered.","error"); return false; }
     finally { setBusy(false); }
   };
@@ -766,6 +802,8 @@ function GuestBanner({ onLogin }) {
 
 function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
   const { events } = useEvents();
+  const { apps } = useMyApps();
+  const { clubs: dashClubs } = useClubs();
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),900);return()=>clearTimeout(t);},[]);
@@ -776,12 +814,12 @@ function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
       <div className="rounded-2xl p-6 text-white" style={{background:"linear-gradient(135deg,#1e1b4b 0%,#4c1d95 100%)"}}>
         <p className="text-violet-300 text-sm font-medium mb-1">{isGuest?"👀 Browsing as guest":"Good morning 👋"}</p>
         <h2 className="text-2xl font-bold mb-1">{isGuest?"Welcome to ClubSphere":"Welcome back, Aryan"}</h2>
-        <p className="text-indigo-200 text-sm">{isGuest?"Sign in to register and follow clubs":"3 upcoming events · 3 registrations"}</p>
+        <p className="text-indigo-200 text-sm">{isGuest?"Sign in to register and follow clubs":`${events.filter(e=>e.status==="published").length} upcoming events · ${apps.length} registrations`}</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <StatCard label="All Clubs" value="18" sub="Tap to explore" gradient="bg-gradient-to-br from-violet-500 to-indigo-700" onClick={()=>setPage("clubs")}/>
         <StatCard label="Registrations" value={isGuest?"—":"3"} sub={isGuest?"Sign in":"All approved"} gradient="bg-gradient-to-br from-amber-400 to-orange-500" onClick={isGuest?onLoginRequired:()=>setPage("applications")}/>
-        <StatCard label="Clubs Followed" value={isGuest?"—":"4"} sub={isGuest?"Sign in":"Tap to explore"} gradient="bg-gradient-to-br from-emerald-400 to-teal-600" onClick={isGuest?onLoginRequired:()=>setPage("clubs")}/>
+        <StatCard label="Clubs Followed" value={isGuest?"—":String(dashClubs.filter(c=>c.following).length)} sub={isGuest?"Sign in":"Tap to explore"} gradient="bg-gradient-to-br from-emerald-400 to-teal-600" onClick={isGuest?onLoginRequired:()=>setPage("clubs")}/>
         <StatCard label="Unread Messages" value={isGuest?"—":"2"} sub={isGuest?"Sign in":"Tap to open"} gradient="bg-gradient-to-br from-rose-400 to-pink-600" onClick={isGuest?onLoginRequired:()=>setPage("messages")}/>
       </div>
       <Card>
@@ -797,7 +835,8 @@ function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
       {!isGuest&&(
         <Card>
           <SectionHeader title="My Applications" action="See all" onAction={()=>setPage("applications")}/>
-          {MY_APPS_DATA.map(a=>(
+          {apps.length===0&&<p className="text-sm text-slate-400 px-3 py-2">No registrations yet. Pick an event above.</p>}
+          {apps.map(a=>(
             <div key={a.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700/50 transition">
               <div><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{a.event}</p><p className="text-xs text-slate-400">{a.club} · Applied {a.applied}</p></div>
               <StatusBadge status={a.status}/>
@@ -870,7 +909,7 @@ function StudentProfile() {
 
 function ExploreClubs({ isGuest, onLoginRequired }) {
   const { events } = useEvents();
-  const [clubs, setClubs] = useState(CLUBS_DATA);
+  const { clubs, toggleFollowClub, loading: clubsLoading } = useClubs();
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState("All");
   const [level, setLevel] = useState("all");
@@ -880,8 +919,8 @@ function ExploreClubs({ isGuest, onLoginRequired }) {
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),700);return()=>clearTimeout(t);},[]);
   const cats = ["All","Technology","Leadership","Academic","Cultural","Business","Arts","Sports"];
   const filtered = clubs.filter(c=>(cat==="All"||c.category===cat)&&(level==="all"||c.level===level)&&c.name.toLowerCase().includes(search.toLowerCase()));
-  const toggleFollow = (id,name) => { if(isGuest){onLoginRequired();return;} setClubs(l=>l.map(c=>c.id===id?{...c,following:!c.following}:c)); const club=clubs.find(c=>c.id===id); add(club?.following?`Unfollowed ${name}`:`Now following ${name}! 🎉`); };
-  if (loading) return <SkeletonPage/>;
+  const toggleFollow = async (id,name) => { if(isGuest){onLoginRequired();return;} const nowFollowing = await toggleFollowClub(id); if (nowFollowing===null) return; add(nowFollowing?`Now following ${name}! 🎉`:`Unfollowed ${name}`); };
+  if (loading||clubsLoading) return <SkeletonPage/>;
   return (
     <div className="space-y-5">
       {selectedEvent&&<EventDetailModal event={selectedEvent} onClose={()=>setSelectedEvent(null)} isGuest={isGuest} onLoginRequired={onLoginRequired}/>}
@@ -927,17 +966,18 @@ function ExploreClubs({ isGuest, onLoginRequired }) {
 function StudentApplications() {
   const [ticketApp, setTicketApp] = useState(null);
   const [certApp, setCertApp] = useState(null);
+  const { apps, loading: appsLoading } = useMyApps();
   const [loading, setLoading] = useState(true);
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),600);return()=>clearTimeout(t);},[]);
-  if (loading) return <SkeletonPage/>;
+  if (loading||appsLoading) return <SkeletonPage/>;
   return (
     <div className="space-y-5">
       {ticketApp&&<QRTicketModal app={ticketApp} onClose={()=>setTicketApp(null)}/>}
       {certApp&&<CertificateModal app={certApp} onClose={()=>setCertApp(null)}/>}
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">My Applications</h2><p className="text-slate-400 text-sm">All your event registrations</p></div>
-      {MY_APPS_DATA.length===0?<EmptyState emoji="📋" title="No applications yet" desc="Register for events to see them here."/>:(
+      {apps.length===0?<EmptyState emoji="📋" title="No applications yet" desc="Register for events to see them here."/>:(
         <div className="space-y-3">
-          {MY_APPS_DATA.map(a=>(
+          {apps.map(a=>(
             <Card key={a.id}>
               <div className="flex items-start gap-4">
                 <div className="flex-1">

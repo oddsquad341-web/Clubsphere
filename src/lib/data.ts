@@ -70,3 +70,63 @@ export async function registerForEvent(eventId: string | number, paid: boolean) 
   });
   if (error) throw error;
 }
+
+// ── Clubs ────────────────────────────────────────────────────────────────────
+export interface UiClub {
+  id: string | number; name: string; emoji: string; category: string; members: number;
+  events: number; following: boolean; desc: string; level: string;
+}
+
+export async function fetchClubs(): Promise<UiClub[]> {
+  if (!supabase) return [];
+  const { data: u } = await supabase.auth.getUser();
+  const [cl, st, fo] = await Promise.all([
+    supabase.from("clubs").select("*").order("name"),
+    supabase.from("club_stats").select("club_id, followers, events"),
+    u.user ? supabase.from("club_follows").select("club_id").eq("student_id", u.user.id) : Promise.resolve({ data: [] as any[] }),
+  ]);
+  if (cl.error) throw cl.error;
+  const stats: Record<string, any> = {};
+  (st.data ?? []).forEach((s: any) => { stats[s.club_id] = s; });
+  const mine = new Set((fo.data ?? []).map((f: any) => f.club_id));
+  return (cl.data ?? []).map((c: any) => ({
+    id: c.id, name: c.name, emoji: c.emoji ?? "🏆", category: c.category ?? "General",
+    members: Number(stats[c.id]?.followers ?? 0), events: Number(stats[c.id]?.events ?? 0),
+    following: mine.has(c.id), desc: c.description ?? "", level: c.level ?? "university",
+  }));
+}
+
+export async function setFollow(clubId: string | number, follow: boolean) {
+  if (!supabase) return;
+  const { data: u } = await supabase.auth.getUser();
+  if (!u.user) throw new Error("Not signed in");
+  const q = follow
+    ? supabase.from("club_follows").insert({ club_id: clubId, student_id: u.user.id })
+    : supabase.from("club_follows").delete().eq("club_id", clubId).eq("student_id", u.user.id);
+  const { error } = await q;
+  if (error) throw error;
+}
+
+// ── My applications (registrations) ─────────────────────────────────────────
+export interface UiApp {
+  id: string | number; event: string; club: string; date: string; applied: string;
+  status: string; attended: boolean;
+}
+const STATUS_MAP: Record<string, string> = { confirmed: "approved", pending: "pending", cancelled: "rejected" };
+
+export async function fetchMyApplications(): Promise<UiApp[]> {
+  if (!supabase) return [];
+  const { data: u } = await supabase.auth.getUser();
+  if (!u.user) return [];
+  const { data, error } = await supabase
+    .from("registrations")
+    .select("id,status,attended,created_at,events(title,date,clubs(name))")
+    .eq("student_id", u.user.id).order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    id: r.id, event: r.events?.title ?? "Event", club: r.events?.clubs?.name ?? "",
+    date: r.events?.date ?? "TBD",
+    applied: new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+    status: STATUS_MAP[r.status] ?? r.status, attended: !!r.attended,
+  }));
+}
