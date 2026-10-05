@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
+import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
   MessageSquare, UserPlus, Plus, ArrowRight, X, User, BookOpen,
@@ -653,9 +654,28 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
     if (tab==="email"&&!isValidEmail(v)){setError("Enter a valid email address");return;}
     if (tab!=="email"&&!isValidPhone(v)){setError("Enter a valid 10-digit mobile number");return;}
     setValue(v); setError(""); setLoading(true);
-    setTimeout(()=>{setLoading(false);setStep("otp");setOtp("");setCooldown(60);},1000);
+    const done = ()=>{setLoading(false);setStep("otp");setOtp("");setCooldown(60);};
+    if (supabaseEnabled) {
+      sendOtp(tab==="email"?"email":"phone", v).then(({error})=>{ if (error){setLoading(false);setError(friendlyAuthError(error));return;} done(); });
+      return;
+    }
+    setTimeout(done,1000);
   };
-  const handleVerify = () => { if (otp.length<4){setError("Enter the OTP sent to you");return;} setError(""); setLoading(true); setTimeout(()=>{setLoading(false);setShowRolePicker(true);},800); };
+  const handleVerify = () => {
+    if (loading) return;
+    if (otp.length<(supabaseEnabled?6:4)){setError("Enter the OTP sent to you");return;}
+    setError(""); setLoading(true);
+    if (supabaseEnabled) {
+      verifyOtp(tab==="email"?"email":"phone", value, otp).then(async ({data,error})=>{
+        if (error||!data?.user){setLoading(false);setError(friendlyAuthError(error));return;}
+        const profile = await getProfile(data.user.id);
+        setLoading(false);
+        onAuth(profile?.role||"student"); // role is assigned in the database, not chosen by the user
+      });
+      return;
+    }
+    setTimeout(()=>{setLoading(false);setShowRolePicker(true);},800);
+  };
   const roles = [{id:"student",label:"Student",icon:User,desc:"Explore & register for events"},{id:"club",label:"Club Admin",icon:Users,desc:"Manage your club & events"},{id:"faculty",label:"Faculty Coordinator",icon:BookOpen,desc:"Oversee and approve events"},{id:"techAdmin",label:"Tech Admin",icon:Shield,desc:"Platform-level administration"}];
   if (showRolePicker) return (
     <div className={`min-h-screen flex flex-col items-center justify-center p-6 ${bg}`}>
@@ -1678,28 +1698,39 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
 
 function RootRouter() {
   const [screen, setScreen] = useState("landing");
-  const [session, setSession] = useState(null); // { role, isGuest } — replaced by Supabase session in Batch 6
+  const [session, setSession] = useState(null); // { role, isGuest }
+  const [booting, setBooting] = useState(supabaseEnabled);
+
+  // Restore an existing Supabase session on load / refresh
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    getCurrentSession().then(r=>{ if (alive&&r) setSession({role:r.role,isGuest:false}); }).finally(()=>{ if (alive) setBooting(false); });
+    return ()=>{ alive = false; };
+  },[]);
 
   const handleAuthDone = (role, isGuest) => {
     setSession({ role, isGuest });
     setScreen(isGuest ? "app" : "onboarding");
   };
-  const handleLogout = () => { setSession(null); setScreen("university"); };
+  const handleLogout = async () => { await signOut(); setSession(null); setScreen("university"); };
+  const handleGetStarted = () => setScreen(session&&!session.isGuest ? "app" : "university");
 
   const screens = {
     landing: <LandingPage
-      onGetStarted={()=>setScreen("university")}
+      onGetStarted={handleGetStarted}
       onPricing={()=>setScreen("pricing")}
       onPrivacy={()=>setScreen("privacy")}
       onTerms={()=>setScreen("terms")}
     />,
-    pricing: <PricingPage onBack={()=>setScreen("landing")} onGetStarted={()=>setScreen("university")}/>,
+    pricing: <PricingPage onBack={()=>setScreen("landing")} onGetStarted={handleGetStarted}/>,
     privacy: <PrivacyPage onBack={()=>setScreen("landing")}/>,
     terms: <TermsPage onBack={()=>setScreen("landing")}/>,
     onboarding: <OnboardingFlow role={session?.role||"student"} onDone={()=>setScreen("app")}/>,
     university: <AppShell key="anon" onAuthDone={handleAuthDone}/>,
     app: <AppShell key={`${session?.role}-${session?.isGuest}`} session={session} onAuthDone={handleAuthDone} onLogout={handleLogout}/>,
   };
+  if (booting) return <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950"><RefreshCw size={20} className="animate-spin text-violet-500" aria-label="Loading"/></div>;
   return screens[screen] || screens.landing;
 }
 
