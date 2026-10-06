@@ -388,3 +388,113 @@ create policy "team staff" on public.club_team_members for all
   using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
 create policy "team club admin" on public.club_team_members for all
   using (public.is_club_admin(club_id)) with check (public.is_club_admin(club_id));
+
+-- ── Batch 6j–9: settings, payments, push, club profile, capacity ─────────────
+-- Platform settings (public read so the login screen can honour them; only Tech Admin writes)
+create table if not exists public.platform_settings (
+  key text primary key, value jsonb not null, updated_at timestamptz default now(), updated_by uuid references public.profiles(id)
+);
+alter table public.platform_settings enable row level security;
+create policy "settings read" on public.platform_settings for select using (true);
+create policy "settings admin write" on public.platform_settings for all
+  using (public.app_role() = 'techAdmin') with check (public.app_role() = 'techAdmin');
+insert into public.platform_settings (key, value) values
+  ('otpEmail','true'),('otpSMS','true'),('guestBrowse','true'),('autoApprove','false'),
+  ('maintenanceMode','false'),('maxClubs','50'),('idleMinutes','30')
+on conflict (key) do nothing;
+
+create or replace function public.setting_bool(k text, d boolean) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select (value #>> '{}')::boolean from public.platform_settings where key = k), d)
+$$;
+create or replace function public.setting_int(k text, d int) returns int
+language sql stable security definer set search_path = public as $$
+  select coalesce((select (value #>> '{}')::int from public.platform_settings where key = k), d)
+$$;
+
+-- "Auto-approve club events" setting is now honoured by the approval trigger
+create or replace function public.events_guard_status() returns trigger
+language plpgsql as $$
+declare auto boolean := public.setting_bool('autoApprove', false);
+begin
+  if public.app_role() = 'club' then
+    if tg_op = 'INSERT' and new.status = 'published' and not auto then
+      new.status := 'pending';
+    elsif tg_op = 'UPDATE' and new.status is distinct from old.status
+          and (new.status = 'rejected' or (new.status = 'published' and not auto)) then
+      raise exception 'Only faculty can approve or reject events';
+    end if;
+  end if;
+  return new;
+end $$;
+
+-- "Guest browsing" setting gates anonymous reads of events and clubs
+drop policy if exists "events read" on public.events;
+create policy "events read" on public.events for select using (
+  (status = 'published' and (auth.uid() is not null or public.setting_bool('guestBrowse', true)))
+  or public.app_role() in ('faculty','techAdmin') or public.is_club_admin(club_id));
+drop policy if exists "clubs read" on public.clubs;
+create policy "clubs read" on public.clubs for select using (auth.uid() is not null or public.setting_bool('guestBrowse', true));
+
+-- "Max clubs per university" setting
+create or replace function public.clubs_guard_limit() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare mx int := public.setting_int('maxClubs', 50); n int;
+begin
+  if new.university_id is not null then
+    select count(*) into n from public.clubs where university_id = new.university_id;
+    if n >= mx then raise exception 'Club limit reached for this university'; end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists clubs_guard_limit on public.clubs;
+create trigger clubs_guard_limit before insert on public.clubs for each row execute function public.clubs_guard_limit();
+
+-- club public profile fields (about = description)
+alter table public.clubs add column if not exists tagline text;
+alter table public.clubs add column if not exists contact_email text;
+
+-- Capacity is now enforced in the database (server/service-role confirmations are exempt so a paid student is never left without a ticket)
+create or replace function public.registrations_guard_capacity() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare cap int; n int;
+begin
+  if auth.role() = 'service_role' or new.status = 'cancelled' then return new; end if;
+  select spots into cap from public.events where id = new.event_id;
+  select count(*) into n from public.registrations where event_id = new.event_id and status <> 'cancelled';
+  if cap is not null and n >= cap then raise exception 'Event is full'; end if;
+  return new;
+end $$;
+drop trigger if exists registrations_guard_capacity on public.registrations;
+create trigger registrations_guard_capacity before insert on public.registrations
+  for each row execute function public.registrations_guard_capacity();
+
+-- Payments: only the server (service role) writes; students can read their own
+create table if not exists public.payments (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.events(id) on delete restrict,
+  student_id uuid not null references public.profiles(id) on delete restrict,
+  order_id text not null unique, payment_id text,
+  amount_paise int not null, currency text not null default 'INR',
+  status text not null default 'created' check (status in ('created','paid','failed')),
+  created_at timestamptz default now(), paid_at timestamptz
+);
+alter table public.payments enable row level security;
+create policy "payments read" on public.payments for select using (
+  student_id = auth.uid() or public.app_role() in ('faculty','techAdmin') or public.is_event_club_admin(event_id));
+
+-- Students can register themselves only for FREE events; paid registrations are created by /api/razorpay-verify
+drop policy if exists "reg insert own" on public.registrations;
+create policy "reg insert own" on public.registrations for insert with check (
+  student_id = auth.uid() and exists (
+    select 1 from public.events e where e.id = event_id and e.status = 'published' and coalesce(e.price, 0) = 0));
+
+-- Web push subscriptions (one row per browser/device)
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  endpoint text not null unique, p256dh text not null, auth text not null,
+  created_at timestamptz default now()
+);
+alter table public.push_subscriptions enable row level security;
+create policy "push own" on public.push_subscriptions for all using (user_id = auth.uid()) with check (user_id = auth.uid());

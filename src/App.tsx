@@ -1,9 +1,12 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb, fetchMyProfile, saveMyProfile, uploadPoster, fetchNotifications, markNotifRead, markAllNotifsRead, subscribeNotifications, fetchTeam, addTeamMemberDb, removeTeamMemberDb, fetchAnalytics } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb, fetchSettings, saveSettings, DEFAULT_SETTINGS, fetchMyClubProfile, fetchClubProfileById, saveClubProfile, payForEvent, checkInRegistration, fetchMyProfile, saveMyProfile, uploadPoster, fetchNotifications, markNotifRead, markAllNotifsRead, subscribeNotifications, fetchTeam, addTeamMemberDb, removeTeamMemberDb, fetchAnalytics } from "./lib/data";
+import QRCode from "qrcode";
+import jsQR from "jsqr";
+import { pushSupported, pushEnabled, enablePush, disablePush } from "./lib/push";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
-  LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
+  LayoutDashboard, ScanLine, Search, Bell, Menu, Calendar, Users, FileText,
   MessageSquare, UserPlus, Plus, ArrowRight, X, User, BookOpen,
   Settings, Pencil, Trash2, Heart, CheckCircle, MapPin, Clock,
   ChevronDown, ChevronUp, Shield, Globe, LogOut, Phone, Mail,
@@ -285,6 +288,23 @@ function PageWrapper({ children, pageKey }) { return <div key={pageKey} classNam
 // ─── NOTIFICATIONS PANEL ──────────────────────────────────────────────────────
 
 function NotificationsPanel({ onClose, notifs, markRead, markAll }) {
+  const { add } = useToast();
+  const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const pushOk = supabaseEnabled && pushSupported();
+  useEffect(()=>{ if (pushOk) pushEnabled().then(setPushOn).catch(()=>{}); },[pushOk]);
+  const togglePush = async () => {
+    setPushBusy(true);
+    try {
+      if (pushOn) { await disablePush(); setPushOn(false); add("Push notifications off","info"); }
+      else {
+        const r = await enablePush();
+        if (r==="ok") { setPushOn(true); add("Push notifications on 🔔"); }
+        else if (r==="denied") add("Notifications are blocked in your browser settings","error");
+      }
+    } catch { add("Couldn't update push notifications","error"); }
+    finally { setPushBusy(false); }
+  };
   const unread = notifs.filter(n => !n.read).length;
   const typeColors = { success:"bg-emerald-100 dark:bg-emerald-900/30", event:"bg-violet-100 dark:bg-violet-900/30", reminder:"bg-amber-100 dark:bg-amber-900/30", announcement:"bg-blue-100 dark:bg-blue-900/30", warning:"bg-rose-100 dark:bg-rose-900/30" };
   return (
@@ -301,6 +321,10 @@ function NotificationsPanel({ onClose, notifs, markRead, markAll }) {
             <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1"><X size={18}/></button>
           </div>
         </div>
+        {pushOk&&(<div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between flex-shrink-0">
+          <span className="text-xs text-slate-500 dark:text-slate-400">Push notifications</span>
+          <button onClick={togglePush} disabled={pushBusy} className="text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline disabled:opacity-50">{pushOn?"Turn off":"Turn on"}</button>
+        </div>)}
         <div className="flex-1 overflow-y-auto">
           {notifs.length === 0 ? <EmptyState emoji="🔔" title="All caught up!" desc="No new notifications."/> : (
             notifs.map(n => (
@@ -330,7 +354,21 @@ function PaymentModal({ event, onClose, onSuccess }) {
   const [step, setStep] = useState("review"); // review | processing | done
   const [method, setMethod] = useState("upi");
   const { add } = useToast();
-  const handlePay = () => {
+  const { profile: payer } = useMyProfile();
+  const live = supabaseEnabled;
+  const handlePay = async () => {
+    if (live) {
+      setStep("processing");
+      try {
+        await payForEvent(event.id, { name: payer.name||undefined, email: payer.email||undefined, contact: payer.phone||undefined });
+        setStep("done");
+        setTimeout(()=>{ onSuccess(); add("Payment successful! You're registered 🎉"); onClose(); }, 1200);
+      } catch (e) {
+        setStep("review");
+        if (e?.message!=="dismissed") add(e?.message||"Payment failed","error");
+      }
+      return;
+    }
     setStep("processing");
     setTimeout(() => { setStep("done"); setTimeout(() => { onSuccess(); add("Payment successful! You're registered 🎉"); onClose(); }, 1500); }, 2000);
   };
@@ -363,7 +401,8 @@ function PaymentModal({ event, onClose, onSuccess }) {
               </div>
             </div>
             <div className="p-5 space-y-4">
-              <div>
+              {live&&<p className="text-xs text-slate-500 dark:text-slate-400">You'll choose UPI, card or net banking in the secure Razorpay window.</p>}
+              <div className={live?"hidden":""}>
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 uppercase tracking-wide">Payment Method</p>
                 <div className="space-y-2">
                   {[["upi","UPI / QR Code","💳"],["card","Debit / Credit Card","🏦"],["netbanking","Net Banking","🌐"]].map(([id,label,icon])=>(
@@ -375,7 +414,7 @@ function PaymentModal({ event, onClose, onSuccess }) {
                   ))}
                 </div>
               </div>
-              {method==="upi" && (
+              {!live && method==="upi" && (
                 <div className="bg-slate-50 dark:bg-slate-700 rounded-xl p-3">
                   <label className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 block font-medium">UPI ID</label>
                   <input placeholder="yourname@upi" className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"/>
@@ -675,12 +714,14 @@ function useClubRegistrations() {
   const { add } = useToast();
   const [regs, setRegs] = useState(supabaseEnabled ? [] : REGISTRATIONS_DATA);
   const [loading, setLoading] = useState(supabaseEnabled);
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{ const f=()=>setTick(t=>t+1); window.addEventListener("cs:registrations-changed",f); return ()=>window.removeEventListener("cs:registrations-changed",f); },[]);
   useEffect(()=>{
     if (!supabaseEnabled) return;
     let alive = true;
     fetchClubRegistrations().then(r=>{ if (alive) setRegs(r); }).catch(()=>add("Couldn't load registrations","error")).finally(()=>{ if (alive) setLoading(false); });
     return ()=>{ alive = false; };
-  },[]);
+  },[tick]);
   const toggleAttendance = async (id) => {
     const r = regs.find(x=>x.id===id); if (!r) return;
     const next = !r.attended;
@@ -747,6 +788,31 @@ function useTeam() {
   return { team, addTeamMember, removeTeamMember };
 }
 
+// ─── PLATFORM SETTINGS (shared) ─────────────────────────────────────────────
+const SettingsContext = createContext({ settings: DEFAULT_SETTINGS, setSettings: (_s) => {}, reload: () => {} });
+const useSettings = () => useContext(SettingsContext);
+function SettingsProvider({ children }) {
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const reload = useCallback(()=>{ if (supabaseEnabled) fetchSettings().then(setSettings).catch(()=>{}); },[]);
+  useEffect(()=>{ reload(); },[reload]);
+  return <SettingsContext.Provider value={{ settings, setSettings, reload }}>{children}</SettingsContext.Provider>;
+}
+
+function MaintenanceScreen({ signedIn, onAdminSignIn, onSignOut }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50 dark:bg-slate-950">
+      <div className="max-w-sm text-center">
+        <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-4"><AlertTriangle size={30} className="text-amber-600"/></div>
+        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">We'll be right back</h1>
+        <p className="text-slate-500 dark:text-slate-400 text-sm mt-2">ClubSphere is down for maintenance. Please check back shortly.</p>
+        {signedIn
+          ? <button onClick={onSignOut} className="mt-6 text-sm text-violet-600 dark:text-violet-400 font-medium hover:underline">Sign out</button>
+          : <button onClick={onAdminSignIn} className="mt-6 text-sm text-slate-400 hover:text-slate-600 hover:underline">Admin sign in</button>}
+      </div>
+    </div>
+  );
+}
+
 // ─── MY PROFILE (shared) ───────────────────────────────────────────────────
 const DEMO_PROFILE = {name:"Aryan Gupta",enroll:"A2K22001",branch:"BTech Computer Science",year:"3rd Year",email:"aryan.gupta@amity.edu",phone:"+91 98765 43210",bio:"Passionate about technology and innovation. Core member of Tech Society and TEDx Club.",interests:["Technology","Leadership","Business"],university:"Amity University"};
 const EMPTY_PROFILE = {name:"",enroll:"",branch:"",year:"",email:"",phone:"",bio:"",interests:[],university:""};
@@ -787,7 +853,7 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
     if (!supabaseEnabled) return true;
     setBusy(true);
     try { await registerForEvent(event.id, paid); setLiveReg(true); window.dispatchEvent(new Event("cs:registrations-changed")); return true; }
-    catch { add("Couldn't register. You may already be registered.","error"); return false; }
+    catch (e) { add(/full/i.test(e?.message||"")?"This event is full":"Couldn't register. You may already be registered.","error"); return false; }
     finally { setBusy(false); }
   };
   const handleRegister = async () => {
@@ -799,7 +865,7 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
   const handleICS = () => { generateICS(event); add("Calendar event downloaded (.ics)","info"); };
   return (
     <>
-      {showPayment && <PaymentModal event={event} onClose={()=>setShowPayment(false)} onSuccess={async ()=>{ await saveRegistration(true); onClose(); }}/>}
+      {showPayment && <PaymentModal event={event} onClose={()=>setShowPayment(false)} onSuccess={()=>{ if (supabaseEnabled) { setLiveReg(true); window.dispatchEvent(new Event("cs:registrations-changed")); } onClose(); }}/>}
       <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{background:"rgba(0,0,0,0.6)"}} onClick={onClose}>
         <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
           {event.poster_url&&<img src={event.poster_url} alt={`${event.title} poster`} loading="lazy" className="w-full max-h-52 object-cover"/>}
@@ -858,6 +924,9 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
 function QRTicketModal({ app, onClose }) {
   const { add } = useToast();
   const { profile } = useMyProfile();
+  const [qr, setQr] = useState("");
+  const active = !supabaseEnabled || app.status==="approved";
+  useEffect(()=>{ QRCode.toDataURL(`CS1:${app.id}`,{margin:1,width:360,errorCorrectionLevel:"M"}).then(setQr).catch(()=>{}); },[app.id]);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{background:"rgba(0,0,0,0.6)"}} onClick={onClose}>
       <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-xs shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
@@ -868,17 +937,75 @@ function QRTicketModal({ app, onClose }) {
           <p className="text-xs text-slate-400 mt-0.5">{app.club} · {app.date}</p>
         </div>
         <div className="p-6 flex flex-col items-center">
-          <div className="w-40 h-40 bg-slate-100 dark:bg-slate-700 rounded-2xl flex items-center justify-center mb-4 relative overflow-hidden">
-            <div className="grid grid-cols-7 gap-0.5 p-2 opacity-80">
-              {[...Array(49)].map((_,i)=><div key={i} className={`w-4 h-4 rounded-sm ${(i*7+i)%3===0?"bg-slate-800 dark:bg-white":"bg-transparent"}`}/>)}
-            </div>
-            <div className="absolute inset-0 flex items-center justify-center"><div className="w-8 h-8 bg-white dark:bg-slate-800 rounded flex items-center justify-center text-lg">🎫</div></div>
-          </div>
+          <div className={`bg-white p-2 rounded-2xl mb-4 ${active?"":"opacity-30"}`}>{qr?<img src={qr} alt={`Ticket QR code for ${app.event}`} className="w-44 h-44"/>:<div className="w-44 h-44 animate-pulse bg-slate-100 rounded-xl"/>}</div>
+          {!active&&<p className="text-xs text-amber-600 dark:text-amber-400 mb-3 text-center">This ticket isn't active yet. Payment is pending.</p>}
           <p className="text-xs text-slate-400 mb-1">Enrollment No.</p>
           <p className="font-mono font-bold text-slate-800 dark:text-white text-lg">{profile.enroll||"—"}</p>
           <p className="text-xs text-slate-400 mt-3 text-center">Show this QR at the venue for entry</p>
-          <button onClick={()=>add("Ticket downloaded!","info")} className="mt-4 flex items-center gap-2 text-sm text-violet-600 dark:text-violet-400 font-medium hover:underline"><Download size={14}/>Download Ticket</button>
+          {active&&qr&&<a href={qr} download={`clubsphere-ticket-${String(app.id).slice(0,8)}.png`} className="mt-4 flex items-center gap-2 text-sm text-violet-600 dark:text-violet-400 font-medium hover:underline"><Download size={14}/>Download QR</a>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TICKET SCANNER (club admin check-in) ─────────────────────────────────────
+function TicketScanner({ onClose }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const busy = useRef(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [count, setCount] = useState(0);
+  useEffect(()=>{
+    let stream = null, raf = 0, stopped = false, last = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const now = performance.now();
+      if (now-last<120||busy.current) return;
+      last = now;
+      const v = videoRef.current, c = canvasRef.current;
+      if (!v||!c||v.readyState<2||!v.videoWidth) return;
+      const w = Math.min(640, v.videoWidth), h = Math.round(w*v.videoHeight/v.videoWidth);
+      c.width = w; c.height = h;
+      const ctx = c.getContext("2d",{willReadFrequently:true});
+      ctx.drawImage(v,0,0,w,h);
+      const code = jsQR(ctx.getImageData(0,0,w,h).data, w, h, {inversionAttempts:"dontInvert"});
+      if (!code?.data) return;
+      busy.current = true;
+      checkInRegistration(code.data).then(r=>{
+        setResult(r);
+        if (r.ok) { setCount(n=>n+1); window.dispatchEvent(new Event("cs:registrations-changed")); }
+        setTimeout(()=>{ setResult(null); busy.current = false; }, 2200);
+      });
+    };
+    (async ()=>{
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:"environment" } }, audio:false });
+        if (stopped) { stream.getTracks().forEach(t=>t.stop()); return; }
+        videoRef.current.srcObject = stream; await videoRef.current.play(); tick();
+      } catch { setError("Camera access was blocked. Allow camera permission in your browser settings to scan tickets."); }
+    })();
+    return ()=>{ stopped = true; cancelAnimationFrame(raf); stream?.getTracks().forEach(t=>t.stop()); };
+  },[]);
+  return (
+    <div className="fixed inset-0 z-[90] bg-black flex flex-col" role="dialog" aria-modal="true" aria-label="Scan tickets">
+      <div className="flex items-center justify-between p-4 text-white">
+        <div><p className="font-semibold">Scan tickets</p><p className="text-xs text-white/60">{count} checked in this session</p></div>
+        <button onClick={onClose} aria-label="Close scanner" className="p-2 rounded-lg bg-white/10"><X size={18}/></button>
+      </div>
+      <div className="relative flex-1 flex items-center justify-center overflow-hidden">
+        {error ? <p className="text-white/80 text-sm text-center px-8">{error}</p> : <>
+          <video ref={videoRef} playsInline muted className="w-full h-full object-cover"/>
+          <div className="absolute w-60 h-60 border-2 border-white/70 rounded-2xl pointer-events-none"/>
+        </>}
+        <canvas ref={canvasRef} className="hidden"/>
+        {result&&(
+          <div role="status" aria-live="assertive" className={`absolute bottom-8 left-4 right-4 rounded-2xl p-4 text-white shadow-2xl ${result.ok?"bg-emerald-600":result.already?"bg-amber-600":"bg-rose-600"}`}>
+            <p className="font-bold">{result.message}</p>
+            {result.student&&<p className="text-sm text-white/90 mt-0.5">{result.student}{result.event?` · ${result.event}`:""}</p>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -923,6 +1050,8 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+  const { settings } = useSettings();
+  useEffect(()=>{ if (supabaseEnabled&&tab==="email"&&!settings.otpEmail&&settings.otpSMS) setTab("phone"); else if (supabaseEnabled&&tab==="phone"&&!settings.otpSMS&&settings.otpEmail) setTab("email"); },[settings,tab]);
   useEffect(()=>{ if (cooldown<=0) return; const t=setTimeout(()=>setCooldown(c=>c-1),1000); return ()=>clearTimeout(t); },[cooldown]);
   const bg = isDark?"bg-slate-950":"bg-slate-50";
   const surface = isDark?"bg-slate-800 border-slate-700":"bg-white border-slate-200";
@@ -977,11 +1106,11 @@ function AuthScreen({ university, onAuth, onGuest, onBack }) {
         <div className="text-center mb-7"><div className={`w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3 text-2xl ${isDark?"bg-slate-800":"bg-violet-50"}`}>{university.logo}</div><h2 className={`text-xl font-bold ${text}`}>{university.name}</h2><p className={`text-sm mt-1 ${muted}`}>{step==="input"?"Sign in to your account":"Enter the OTP we sent you"}</p></div>
         {step==="input"?(
           <div className="space-y-4">
-            <div className={`flex p-1 rounded-xl ${isDark?"bg-slate-800":"bg-slate-100"}`}>{[["email","Email",Mail],["phone","Phone",Phone]].map(([id,label,Icon])=>(<button key={id} onClick={()=>{setTab(id);setValue("");setError("");}} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition ${tab===id?isDark?"bg-slate-700 text-white shadow":"bg-white text-slate-800 shadow-sm":isDark?"text-slate-500":"text-slate-500"}`}><Icon size={14}/>{label}</button>))}</div>
+            <div className={`flex p-1 rounded-xl ${isDark?"bg-slate-800":"bg-slate-100"}`}>{[["email","Email",Mail],["phone","Phone",Phone]].filter(([id])=>!supabaseEnabled||(id==="email"?settings.otpEmail:settings.otpSMS)).map(([id,label,Icon])=>(<button key={id} onClick={()=>{setTab(id);setValue("");setError("");}} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition ${tab===id?isDark?"bg-slate-700 text-white shadow":"bg-white text-slate-800 shadow-sm":isDark?"text-slate-500":"text-slate-500"}`}><Icon size={14}/>{label}</button>))}</div>
             <div><input value={value} onChange={e=>{setValue(e.target.value);setError("");}} placeholder={tab==="email"?"College email address":"+91 phone number"} className={inputCls}/>{error&&<p className="text-xs text-rose-500 mt-1.5 flex items-center gap-1"><AlertTriangle size={11}/>{error}</p>}</div>
             <button onClick={handleSend} disabled={loading} className="w-full bg-violet-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-violet-700 transition disabled:opacity-60 flex items-center justify-center gap-2">{loading?<><RefreshCw size={14} className="animate-spin"/>Sending…</>:"Send OTP"}</button>
             <div className="flex items-center gap-3"><div className="flex-1 h-px bg-slate-200 dark:bg-slate-700"/><span className={`text-xs ${muted}`}>or</span><div className="flex-1 h-px bg-slate-200 dark:bg-slate-700"/></div>
-            <button onClick={onGuest} className={`w-full border py-3 rounded-xl font-medium text-sm transition flex items-center justify-center gap-2 ${isDark?"border-slate-700 text-slate-300 hover:bg-slate-800":"border-slate-200 text-slate-600 hover:bg-slate-50"}`}><Eye size={15}/>Browse as Guest</button>
+            {(!supabaseEnabled||settings.guestBrowse)&&<button onClick={onGuest} className={`w-full border py-3 rounded-xl font-medium text-sm transition flex items-center justify-center gap-2 ${isDark?"border-slate-700 text-slate-300 hover:bg-slate-800":"border-slate-200 text-slate-600 hover:bg-slate-50"}`}><Eye size={15}/>Browse as Guest</button>}
             <p className={`text-center text-xs ${muted}`}>Guests can view events but cannot register</p>
           </div>
         ):(
@@ -1314,6 +1443,7 @@ function ClubAllEvents() {
   const [fields, setFields] = useState({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
   const { regs: allRegs, toggleAttendance } = useClubRegistrations();
   const [posterFile, setPosterFile] = useState(null);
+  const [showScanner, setShowScanner] = useState(false);
   const { add } = useToast();
   const addEvent = async () => {
     const evTitle = sanitizeText(fields.title,100);
@@ -1331,11 +1461,12 @@ function ClubAllEvents() {
   };
   return (
     <div className="space-y-5">
+      {showScanner&&<TicketScanner onClose={()=>setShowScanner(false)}/>}
       <div className="flex items-center justify-between">
         <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">All Events</h2><p className="text-slate-400 text-sm">{events.length} events total</p></div>
         <div className="flex items-center gap-2">
           <button onClick={()=>setEditing(e=>!e)} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
-          <button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Plus size={15}/>New Event</button>
+          <div className="flex gap-2">{supabaseEnabled&&<button onClick={()=>setShowScanner(true)} className="flex items-center gap-2 border border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 px-3 py-2 rounded-xl text-sm hover:bg-violet-50 dark:hover:bg-violet-900/20 active:scale-95 transition font-medium"><ScanLine size={15}/>Scan Tickets</button>}<button onClick={()=>setShowForm(v=>!v)} className="flex items-center gap-2 bg-violet-600 text-white px-4 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium"><Plus size={15}/>New Event</button></div>
         </div>
       </div>
       {showForm&&(
@@ -1536,8 +1667,23 @@ function AnnouncementsPage() {
 
 function ClubProfile() {
   const [editInfo, setEditInfo] = useState(false);
-  const [info, setInfo] = useState({name:"Tech Society",tagline:"Building tomorrow, today",email:"techsociety@amity.edu",about:"Tech Society at Amity University is a student-run organization dedicated to fostering a passion for technology, innovation, and entrepreneurship."});
+  const [info, setInfo] = useState(supabaseEnabled?{name:"",tagline:"",email:"",about:""}:{name:"Tech Society",tagline:"Building tomorrow, today",email:"techsociety@amity.edu",about:"Tech Society at Amity University is a student-run organization dedicated to fostering a passion for technology, innovation, and entrepreneurship."});
   const { team, addTeamMember, removeTeamMember } = useTeam();
+  const [clubMeta, setClubMeta] = useState(supabaseEnabled ? null : { id: null, emoji: "💻", university: "Amity University · Est. 2018" });
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    fetchMyClubProfile().then(c=>{ if (c) { setClubMeta(c); setInfo({name:c.name,tagline:c.tagline,email:c.email,about:c.about}); } }).catch(()=>{});
+  },[]);
+  const saveInfo = async () => {
+    const clean = { name:sanitizeText(info.name,80), tagline:sanitizeText(info.tagline,120), email:sanitizeText(info.email,120), about:sanitizeText(info.about,1000) };
+    if (!clean.name){add("Club name is required","error");return false;}
+    if (clean.email&&!isValidEmail(clean.email)){add("Enter a valid contact email","error");return false;}
+    if (supabaseEnabled) {
+      if (!clubMeta?.id){add("No club is linked to your account yet","error");return false;}
+      try { await saveClubProfile(clubMeta.id, clean); } catch { add("Couldn't save profile","error"); return false; }
+    }
+    setInfo(clean); return true;
+  };
   const [editTeam, setEditTeam] = useState(false);
   const [newMember, setNewMember] = useState({name:"",enroll:"",role:""});
   const { add } = useToast();
@@ -1548,8 +1694,8 @@ function ClubProfile() {
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Club Profile</h2><p className="text-slate-400 text-sm">Update your club's public information</p></div>
       <Card>
         <div className="flex items-center justify-between mb-5 pb-4 border-b border-slate-100 dark:border-slate-700">
-          <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center text-3xl">💻</div><div><p className="font-bold text-slate-800 dark:text-white text-lg">{info.name}</p><p className="text-slate-400 text-sm">Amity University · Est. 2018</p></div></div>
-          <button onClick={()=>{setEditInfo(e=>!e);if(editInfo)add("Profile saved!");}} className={`p-2 rounded-lg transition ${editInfo?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editInfo?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
+          <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center text-3xl">{clubMeta?.emoji||"🏆"}</div><div><p className="font-bold text-slate-800 dark:text-white text-lg">{info.name||"Your club"}</p><p className="text-slate-400 text-sm">{clubMeta?.university||"—"}</p></div></div>
+          <button onClick={async ()=>{ if(!editInfo){setEditInfo(true);return;} if(await saveInfo()){setEditInfo(false);add("Profile saved!");} }} className={`p-2 rounded-lg transition ${editInfo?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editInfo?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
         </div>
         <div className="space-y-4">
           {[["Club Name","name"],["Tagline","tagline"],["Contact Email","email"]].map(([label,key])=>(<div key={key}><label className="text-xs text-slate-400 mb-1.5 block font-medium">{label}</label>{editInfo?<input value={info[key]} onChange={e=>setInfo(i=>({...i,[key]:e.target.value}))} className={inputCls}/>:<p className="text-sm text-slate-800 dark:text-slate-200 px-3 py-2.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl">{info[key]}</p>}</div>))}
@@ -1742,16 +1888,40 @@ function AuditTrailPage() {
 
 function FacultyProfile() {
   const [editing, setEditing] = useState(false);
-  const [info, setInfo] = useState({name:"Tech Society",tagline:"Building tomorrow, today",about:"Tech Society at Amity University is dedicated to fostering innovation and entrepreneurship.",email:"techsociety@amity.edu"});
+  const [info, setInfo] = useState(supabaseEnabled?{name:"",tagline:"",about:"",email:""}:{name:"Tech Society",tagline:"Building tomorrow, today",about:"Tech Society at Amity University is dedicated to fostering innovation and entrepreneurship.",email:"techsociety@amity.edu"});
   const { add } = useToast();
+  const { profile: me } = useMyProfile();
+  const [clubOptions, setClubOptions] = useState([]);
+  const [clubId, setClubId] = useState("");
+  const [clubEmoji, setClubEmoji] = useState("💻");
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    fetchAdminClubs().then(r=>{ setClubOptions(r); if (r[0]) setClubId(r[0].id); }).catch(()=>add("Couldn't load clubs","error"));
+  },[]);
+  useEffect(()=>{
+    if (!supabaseEnabled||!clubId) return;
+    setEditing(false);
+    fetchClubProfileById(clubId).then(c=>{ if (c) { setInfo({name:c.name,tagline:c.tagline,about:c.about,email:c.email}); setClubEmoji(c.emoji); } }).catch(()=>{});
+  },[clubId]);
+  const saveDescription = async () => {
+    const clean = { name:sanitizeText(info.name,80), tagline:sanitizeText(info.tagline,120), email:sanitizeText(info.email,120), about:sanitizeText(info.about,1000) };
+    if (!clean.name){add("Club name is required","error");return false;}
+    if (clean.email&&!isValidEmail(clean.email)){add("Enter a valid email","error");return false;}
+    if (supabaseEnabled) {
+      if (!clubId){add("Select a club first","error");return false;}
+      try { await saveClubProfile(clubId, clean); } catch { add("Couldn't save description","error"); return false; }
+    }
+    setInfo(clean); return true;
+  };
   const inputCls = "w-full border border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200";
   return (
     <div className="space-y-5">
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Update Description</h2><p className="text-slate-400 text-sm">Edit the club profile you coordinate</p></div>
+      {supabaseEnabled&&(<div><label htmlFor="fac-club" className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Club</label><select id="fac-club" value={clubId} onChange={e=>setClubId(e.target.value)} className={inputCls}>{clubOptions.length===0&&<option value="">No clubs yet</option>}{clubOptions.map(c=>(<option key={c.id} value={c.id}>{c.name}</option>))}</select></div>)}
       <Card>
         <div className="flex items-center justify-between mb-5 pb-4 border-b border-slate-100 dark:border-slate-700">
-          <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center text-3xl">💻</div><div><p className="font-bold text-slate-800 dark:text-white text-lg">{info.name}</p><p className="text-slate-400 text-sm">Coordinated by Dr. Priya Kapoor</p></div></div>
-          <button onClick={()=>{setEditing(e=>!e);if(editing)add("Description saved!");}} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
+          <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center text-3xl">{supabaseEnabled?clubEmoji:"💻"}</div><div><p className="font-bold text-slate-800 dark:text-white text-lg">{info.name||"Select a club"}</p><p className="text-slate-400 text-sm">{supabaseEnabled?`Edited by ${me.name||"you"}`:"Coordinated by Dr. Priya Kapoor"}</p></div></div>
+          <button onClick={async ()=>{ if(!editing){setEditing(true);return;} if(await saveDescription()){setEditing(false);add("Description saved!");} }} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
         </div>
         <div className="space-y-4">
           {[["Club Name","name"],["Tagline","tagline"],["Email","email"]].map(([label,key])=>(<div key={key}><label className="text-xs text-slate-400 mb-1.5 block font-medium">{label}</label>{editing?<input value={info[key]} onChange={e=>setInfo(i=>({...i,[key]:e.target.value}))} className={inputCls}/>:<p className="text-sm text-slate-800 dark:text-slate-200 px-3 py-2.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl">{info[key]}</p>}</div>))}
@@ -1918,17 +2088,37 @@ function TechAdminAnalytics() {
 }
 
 function TechAdminSettings() {
-  const [s, setS] = useState({otpEmail:true,otpSMS:true,guestBrowse:true,autoApprove:true,maintenanceMode:false,maxClubs:"50",sessionTimeout:"24"});
+  const { settings, setSettings, reload } = useSettings();
+  const [s, setS] = useState({ ...settings, maxClubs: String(settings.maxClubs), idleMinutes: String(settings.idleMinutes) });
+  const [saving, setSaving] = useState(false);
   const { add } = useToast();
-  const toggle = (key) => { setS(x=>({...x,[key]:!x[key]})); add("Setting updated","info"); };
+  useEffect(()=>{ setS({ ...settings, maxClubs: String(settings.maxClubs), idleMinutes: String(settings.idleMinutes) }); },[settings]);
+  const toggle = (key) => setS(x=>({...x,[key]:!x[key]}));
   const Tog = ({on,onClick,label}) => (<button onClick={onClick} role="switch" aria-checked={on} aria-label={label} className={`w-11 h-6 rounded-full transition-colors flex-shrink-0 relative ${on?"bg-violet-600":"bg-slate-200 dark:bg-slate-600"}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all shadow-sm ${on?"left-6":"left-1"}`}/></button>);
+  const save = async () => {
+    const maxClubs = parseInt(s.maxClubs), idleMinutes = parseInt(s.idleMinutes);
+    if (!(maxClubs>=1&&maxClubs<=1000)){add("Max clubs must be between 1 and 1000","error");return;}
+    if (!(idleMinutes>=5&&idleMinutes<=240)){add("Auto sign-out must be between 5 and 240 minutes","error");return;}
+    if (!s.otpEmail&&!s.otpSMS){add("Keep at least one sign-in method enabled","error");return;}
+    if (s.maintenanceMode&&!settings.maintenanceMode&&!window.confirm("Turn on maintenance mode? Everyone except Tech Admins will be locked out.")) return;
+    const next = { otpEmail:s.otpEmail, otpSMS:s.otpSMS, guestBrowse:s.guestBrowse, autoApprove:s.autoApprove, maintenanceMode:s.maintenanceMode, maxClubs, idleMinutes };
+    setSaving(true);
+    try { if (supabaseEnabled) await saveSettings(next); setSettings(next); if (supabaseEnabled) reload(); add("Settings saved ✓"); }
+    catch { add("Couldn't save settings","error"); }
+    finally { setSaving(false); }
+  };
+  const row = (key,label,desc) => (<div key={key} className="flex items-center justify-between"><div><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{label}</p><p className="text-xs text-slate-400">{desc}</p></div><Tog on={s[key]} onClick={()=>toggle(key)} label={label}/></div>);
+  const numCls = "w-32 border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400";
   return (
     <div className="space-y-5">
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">System Settings</h2><p className="text-slate-400 text-sm">Global platform configuration</p></div>
-      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Authentication</h3><div className="space-y-4">{[["otpEmail","Email OTP","Allow login via email OTP"],["otpSMS","SMS OTP","Allow login via phone/SMS OTP"],["guestBrowse","Guest Browsing","Allow unauthenticated users to view events"]].map(([key,label,desc])=>(<div key={key} className="flex items-center justify-between"><div><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{label}</p><p className="text-xs text-slate-400">{desc}</p></div><Tog on={s[key]} onClick={()=>toggle(key)} label={label}/></div>))}</div></Card>
-      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Event Settings</h3><div className="space-y-4"><div className="flex items-center justify-between"><div><p className="text-sm font-medium text-slate-800 dark:text-slate-200">Auto-Approve Registrations</p><p className="text-xs text-slate-400">Students approved instantly upon registering</p></div><Tog on={s.autoApprove} onClick={()=>toggle("autoApprove")} label="Auto-approve"/></div><div><label className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 block font-medium">Max Clubs per University</label><input value={s.maxClubs} onChange={e=>setS(x=>({...x,maxClubs:e.target.value}))} type="number" className="w-32 border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"/></div></div></Card>
-      <Card className="border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/10"><h3 className="font-semibold text-rose-800 dark:text-rose-300 mb-3 flex items-center gap-2"><AlertTriangle size={16}/>Danger Zone</h3><div className="flex items-center justify-between"><div><p className="text-sm font-medium text-rose-800 dark:text-rose-300">Maintenance Mode</p><p className="text-xs text-rose-400">Takes the platform offline for all users</p></div><Tog on={s.maintenanceMode} onClick={()=>{toggle("maintenanceMode");add(s.maintenanceMode?"Maintenance off":"⚠️ Platform in maintenance mode","info");}} label="Maintenance"/></div>{s.maintenanceMode&&<div className="mt-3 p-3 bg-rose-100 dark:bg-rose-900/30 rounded-xl text-xs text-rose-700 dark:text-rose-300 font-medium flex items-center gap-2"><AlertTriangle size={13}/>Platform is in maintenance mode</div>}</Card>
-      <button onClick={()=>add("All settings saved! ✓")} className="w-full bg-violet-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-violet-700 active:scale-95 transition">Save All Settings</button>
+      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Authentication</h3><div className="space-y-4">{row("otpEmail","Email OTP","Show email sign-in")}{row("otpSMS","SMS OTP","Show phone sign-in")}{row("guestBrowse","Guest Browsing","Let signed-out visitors view events and clubs")}</div></Card>
+      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Events &amp; Sessions</h3><div className="space-y-4">{row("autoApprove","Auto-Approve Club Events","Club events publish immediately, without faculty approval")}
+        <div><label htmlFor="set-max" className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 block font-medium">Max Clubs per University</label><input id="set-max" value={s.maxClubs} onChange={e=>setS(x=>({...x,maxClubs:e.target.value}))} type="number" min="1" max="1000" className={numCls}/></div>
+        <div><label htmlFor="set-idle" className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 block font-medium">Auto sign-out after inactivity (minutes)</label><input id="set-idle" value={s.idleMinutes} onChange={e=>setS(x=>({...x,idleMinutes:e.target.value}))} type="number" min="5" max="240" className={numCls}/></div></div></Card>
+      <Card className="border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/10"><h3 className="font-semibold text-rose-800 dark:text-rose-300 mb-3 flex items-center gap-2"><AlertTriangle size={16}/>Danger Zone</h3><div className="flex items-center justify-between"><div><p className="text-sm font-medium text-rose-800 dark:text-rose-300">Maintenance Mode</p><p className="text-xs text-rose-400">Locks everyone except Tech Admins out of the app</p></div><Tog on={s.maintenanceMode} onClick={()=>toggle("maintenanceMode")} label="Maintenance mode"/></div></Card>
+      <p className="text-xs text-slate-400">Hiding a sign-in method here only removes it from the app. To disable it at the source, turn the provider off in your Supabase Auth settings.</p>
+      <button onClick={save} disabled={saving} className="w-full bg-violet-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-violet-700 active:scale-95 transition disabled:opacity-60">{saving?"Saving…":"Save All Settings"}</button>
     </div>
   );
 }
@@ -1952,13 +2142,15 @@ const PORTAL_USERS = {
 const IDLE_LIMIT_MS = 30 * 60 * 1000;   // sign out after 30 min of inactivity
 const IDLE_WARN_MS = 2 * 60 * 1000;     // warn 2 min before
 
-function useIdleTimeout(active, onTimeout) {
+function useIdleTimeout(active, onTimeout, limitMs = IDLE_LIMIT_MS) {
   const [warning, setWarning] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const last = useRef(Date.now());
   const warned = useRef(false);
   const cb = useRef(onTimeout);
   cb.current = onTimeout;
+  const lim = useRef(limitMs);
+  lim.current = limitMs;
   useEffect(() => {
     if (!active) { warned.current = false; setWarning(false); return; }
     last.current = Date.now();
@@ -1967,8 +2159,9 @@ function useIdleTimeout(active, onTimeout) {
     evs.forEach(e => window.addEventListener(e, bump, { passive: true }));
     const tick = setInterval(() => {
       const idle = Date.now() - last.current;
-      if (idle >= IDLE_LIMIT_MS) { warned.current = false; setWarning(false); cb.current(); }
-      else if (idle >= IDLE_LIMIT_MS - IDLE_WARN_MS) { warned.current = true; setWarning(true); setRemaining(Math.ceil((IDLE_LIMIT_MS - idle) / 1000)); }
+      const limit = lim.current, warnAt = limit - Math.min(IDLE_WARN_MS, limit / 4);
+      if (idle >= limit) { warned.current = false; setWarning(false); cb.current(); }
+      else if (idle >= warnAt) { warned.current = true; setWarning(true); setRemaining(Math.ceil((limit - idle) / 1000)); }
     }, 1000);
     return () => { evs.forEach(e => window.removeEventListener(e, bump)); clearInterval(tick); };
   }, [active]);
@@ -2004,13 +2197,14 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   const { isDark, toggle: toggleDark } = useTheme();
   const { add } = useToast();
 
-  const unreadNotifs = notifState.notifs.filter(n=>!n.read).length;
   const goToPage = useCallback((p)=>{setPage(p);setSidebarOpen(false);},[]);
   const handleLoginRequired = useCallback(()=>{setScreen("auth");},[]);
   const { profile: myProfile } = useMyProfile();
   const notifState = useNotifications(screen==="app"&&!isGuest);
+  const unreadNotifs = notifState.notifs.filter(n=>!n.read).length;
+  const { settings: platformSettings } = useSettings();
   const handleLogout = useCallback(()=>{ if (onLogout) onLogout(); else setScreen("university"); },[onLogout]);
-  const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); });
+  const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); }, (supabaseEnabled?platformSettings.idleMinutes:30)*60*1000);
 
   if (screen==="university") return <UniversitySelector onSelect={u=>{setSelectedUniversity(u);setScreen("auth");}}/>;
   if (screen==="auth") return <AuthScreen university={selectedUniversity||(supabaseEnabled?{id:null,name:"ClubSphere",logo:"🎓"}:UNIVERSITIES[0])} onAuth={role=>{ if (onAuthDone) onAuthDone(role,false); else {setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");} add("Welcome back! 👋"); }} onGuest={()=>{ if (onAuthDone) onAuthDone("student",true); else {setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");} add("Browsing as guest","info"); }} onBack={()=>setScreen(session?"app":"university")}/>;
@@ -2098,10 +2292,11 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   );
 }
 
-function RootRouter() {
+function RootRouterInner() {
   const [screen, setScreen] = useState("landing");
   const [session, setSession] = useState(null); // { role, isGuest }
   const [booting, setBooting] = useState(supabaseEnabled);
+  const { settings } = useSettings();
 
   // Restore an existing Supabase session on load / refresh
   useEffect(()=>{
@@ -2115,7 +2310,7 @@ function RootRouter() {
     setSession({ role, isGuest });
     setScreen(isGuest ? "app" : "onboarding");
   };
-  const handleLogout = async () => { await signOut(); setSession(null); setScreen("university"); };
+  const handleLogout = async () => { try { await disablePush(); } catch {} await signOut(); setSession(null); setScreen("university"); };
   const handleGetStarted = () => setScreen(session&&!session.isGuest ? "app" : "university");
 
   const screens = {
@@ -2133,8 +2328,13 @@ function RootRouter() {
     app: <AppShell key={`${session?.role}-${session?.isGuest}`} session={session} onAuthDone={handleAuthDone} onLogout={handleLogout}/>,
   };
   if (booting) return <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950"><RefreshCw size={20} className="animate-spin text-violet-500" aria-label="Loading"/></div>;
+  if (supabaseEnabled && settings.maintenanceMode && session?.role!=="techAdmin" && screen!=="university") {
+    return <MaintenanceScreen signedIn={!!session} onAdminSignIn={()=>setScreen("university")} onSignOut={handleLogout}/>;
+  }
   return <ProfileProvider session={session}>{screens[screen] || screens.landing}</ProfileProvider>;
 }
+
+function RootRouter() { return <SettingsProvider><RootRouterInner/></SettingsProvider>; }
 
 export default function App() {
   const [isDark, setIsDark] = useState(()=>{try{return localStorage.getItem("cs-theme")==="dark"||(!localStorage.getItem("cs-theme")&&window.matchMedia("(prefers-color-scheme: dark)").matches);}catch{return false;}});

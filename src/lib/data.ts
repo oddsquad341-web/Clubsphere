@@ -548,3 +548,111 @@ export async function fetchAnalytics(): Promise<Analytics> {
     growth: months.map((o, i) => ({ month: new Date(now.getFullYear(), now.getMonth() + o, 1).toLocaleString("en-IN", { month: "short" }), users: growthCounts[i] })),
   };
 }
+
+// ── Platform settings ───────────────────────────────────────────────────────
+export interface Settings { otpEmail: boolean; otpSMS: boolean; guestBrowse: boolean; autoApprove: boolean; maintenanceMode: boolean; maxClubs: number; idleMinutes: number; }
+export const DEFAULT_SETTINGS: Settings = { otpEmail: true, otpSMS: true, guestBrowse: true, autoApprove: false, maintenanceMode: false, maxClubs: 50, idleMinutes: 30 };
+
+export async function fetchSettings(): Promise<Settings> {
+  if (!supabase) return DEFAULT_SETTINGS;
+  const { data } = await supabase.from("platform_settings").select("key,value");
+  const out: any = { ...DEFAULT_SETTINGS };
+  (data ?? []).forEach((r: any) => { if (r.key in out) out[r.key] = r.value; });
+  return out as Settings;
+}
+
+export async function saveSettings(s: Partial<Settings>) {
+  if (!supabase) return;
+  const uid = await currentUserId();
+  const rows = Object.entries(s).map(([key, value]) => ({ key, value, updated_by: uid, updated_at: new Date().toISOString() }));
+  const { error } = await supabase.from("platform_settings").upsert(rows, { onConflict: "key" });
+  if (error) throw error;
+}
+
+// ── Club public profile ─────────────────────────────────────────────────────
+export interface ClubProfileData { id: string; name: string; tagline: string; email: string; about: string; emoji: string; university: string; }
+const mapClubProfile = (c: any): ClubProfileData => ({ id: c.id, name: c.name ?? "", tagline: c.tagline ?? "", email: c.contact_email ?? "", about: c.description ?? "", emoji: c.emoji ?? "🏆", university: c.universities?.name ?? "" });
+
+export async function fetchMyClubProfile(): Promise<ClubProfileData | null> {
+  if (!supabase) return null;
+  const uid = await currentUserId();
+  if (!uid) return null;
+  const { data } = await supabase.from("clubs").select("id,name,tagline,contact_email,description,emoji,universities(name)").eq("admin_id", uid).limit(1).maybeSingle();
+  return data ? mapClubProfile(data) : null;
+}
+
+export async function fetchClubProfileById(id: string): Promise<ClubProfileData | null> {
+  if (!supabase) return null;
+  const { data } = await supabase.from("clubs").select("id,name,tagline,contact_email,description,emoji,universities(name)").eq("id", id).maybeSingle();
+  return data ? mapClubProfile(data) : null;
+}
+
+export async function saveClubProfile(id: string, p: { name: string; tagline: string; email: string; about: string }) {
+  if (!supabase) return;
+  const { error } = await supabase.from("clubs").update({ name: p.name, tagline: p.tagline, contact_email: p.email, description: p.about }).eq("id", id);
+  if (error) throw error;
+}
+
+// ── Razorpay checkout (browser side) ────────────────────────────────────────
+declare global { interface Window { Razorpay?: any } }
+
+function loadRazorpay(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://checkout.razorpay.com/v1/checkout.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Couldn't load the payment window. Check your connection."));
+    document.head.appendChild(s);
+  });
+}
+
+async function authedPost(path: string, body: unknown) {
+  const { data } = await supabase!.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Please sign in again.");
+  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out?.error || "Something went wrong.");
+  return out;
+}
+
+/** Creates an order on the server, opens Razorpay, then has the server verify the signature. Rejects with Error("dismissed") if the user closes the window. */
+export async function payForEvent(eventId: string | number, prefill?: { name?: string; email?: string; contact?: string }) {
+  if (!supabase) throw new Error("Payments need the live backend.");
+  const order = await authedPost("/api/razorpay-order", { eventId });
+  await loadRazorpay();
+  return new Promise<void>((resolve, reject) => {
+    const rz = new window.Razorpay({
+      key: order.keyId, amount: order.amount, currency: order.currency, order_id: order.orderId,
+      name: "ClubSphere", description: order.eventTitle, prefill, theme: { color: "#7c3aed" },
+      handler: async (r: any) => {
+        try { await authedPost("/api/razorpay-verify", { orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }); resolve(); }
+        catch (e) { reject(e); }
+      },
+      modal: { ondismiss: () => reject(new Error("dismissed")) },
+    });
+    rz.on("payment.failed", (r: any) => reject(new Error(r?.error?.description || "Payment failed.")));
+    rz.open();
+  });
+}
+
+// ── QR check-in (club admin) ────────────────────────────────────────────────
+export interface CheckInResult { ok: boolean; already?: boolean; student?: string; event?: string; message: string; }
+
+export async function checkInRegistration(code: string): Promise<CheckInResult> {
+  if (!supabase) return { ok: false, message: "Check-in needs the live backend." };
+  const m = /^CS1:([0-9a-fA-F-]{36})$/.exec(code.trim());
+  if (!m) return { ok: false, message: "That isn't a ClubSphere ticket." };
+  // RLS only returns registrations for this admin's own events, so a foreign ticket looks "not found"
+  const { data: r, error } = await supabase.from("registrations")
+    .select("id,status,attended,events(title),profiles(full_name,email,phone)").eq("id", m[1]).maybeSingle();
+  if (error || !r) return { ok: false, message: "Ticket not found for your events." };
+  const student = (r as any).profiles?.full_name || (r as any).profiles?.email || (r as any).profiles?.phone || "Student";
+  const event = (r as any).events?.title ?? "Event";
+  if (r.status !== "confirmed") return { ok: false, student, event, message: "Registration isn't confirmed (payment pending or cancelled)." };
+  if (r.attended) return { ok: false, already: true, student, event, message: "Already checked in." };
+  const { error: upErr } = await supabase.from("registrations").update({ attended: true }).eq("id", r.id);
+  if (upErr) return { ok: false, student, event, message: "Couldn't save the check-in. Try again." };
+  return { ok: true, student, event, message: "Checked in ✓" };
+}
