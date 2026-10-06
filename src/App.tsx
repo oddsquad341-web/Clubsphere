@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb, fetchMyProfile, saveMyProfile, uploadPoster } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb, fetchMyProfile, saveMyProfile, uploadPoster, fetchNotifications, markNotifRead, markAllNotifsRead, subscribeNotifications, fetchTeam, addTeamMemberDb, removeTeamMemberDb, fetchAnalytics } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -284,9 +284,7 @@ function PageWrapper({ children, pageKey }) { return <div key={pageKey} classNam
 
 // ─── NOTIFICATIONS PANEL ──────────────────────────────────────────────────────
 
-function NotificationsPanel({ onClose }) {
-  const [notifs, setNotifs] = useState(NOTIFICATIONS_DATA);
-  const markAll = () => setNotifs(n => n.map(x => ({...x, read: true})));
+function NotificationsPanel({ onClose, notifs, markRead, markAll }) {
   const unread = notifs.filter(n => !n.read).length;
   const typeColors = { success:"bg-emerald-100 dark:bg-emerald-900/30", event:"bg-violet-100 dark:bg-violet-900/30", reminder:"bg-amber-100 dark:bg-amber-900/30", announcement:"bg-blue-100 dark:bg-blue-900/30", warning:"bg-rose-100 dark:bg-rose-900/30" };
   return (
@@ -306,9 +304,9 @@ function NotificationsPanel({ onClose }) {
         <div className="flex-1 overflow-y-auto">
           {notifs.length === 0 ? <EmptyState emoji="🔔" title="All caught up!" desc="No new notifications."/> : (
             notifs.map(n => (
-              <button key={n.id} onClick={() => setNotifs(l => l.map(x => x.id===n.id?{...x,read:true}:x))}
+              <button key={n.id} onClick={() => markRead(n.id)}
                 className={`w-full flex items-start gap-3 p-4 border-b border-slate-50 dark:border-slate-700 text-left transition hover:bg-slate-50 dark:hover:bg-slate-700/50 ${!n.read?"":"opacity-60"}`}>
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 ${typeColors[n.type]}`}>{n.emoji}</div>
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 ${typeColors[n.type]||typeColors.event}`}>{n.emoji}</div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-0.5">
                     <p className={`text-sm font-medium text-slate-800 dark:text-slate-200 ${!n.read?"font-semibold":""}`}>{n.title}</p>
@@ -711,6 +709,42 @@ function useFollowers() {
     setFollowers(l=>l.filter(x=>x.id!==id)); return true;
   };
   return { followers, loading, removeFollower };
+}
+
+function useNotifications(enabled) {
+  const [notifs, setNotifs] = useState(supabaseEnabled ? [] : NOTIFICATIONS_DATA);
+  const reload = useCallback(()=>{ fetchNotifications().then(setNotifs).catch(()=>{}); },[]);
+  useEffect(()=>{
+    if (!supabaseEnabled||!enabled) return;
+    reload();
+    let alive = true; let unsub = ()=>{};
+    subscribeNotifications(reload).then(u=>{ if (alive) unsub = u; else u(); });
+    const t = setInterval(reload, 60000); // safety net if realtime isn't enabled
+    return ()=>{ alive = false; unsub(); clearInterval(t); };
+  },[enabled,reload]);
+  const markRead = (id) => { setNotifs(l=>l.map(x=>x.id===id?{...x,read:true}:x)); if (supabaseEnabled) markNotifRead(id).catch(()=>{}); };
+  const markAll = () => { setNotifs(l=>l.map(x=>({...x,read:true}))); if (supabaseEnabled) markAllNotifsRead().catch(()=>{}); };
+  return { notifs, markRead, markAll };
+}
+
+function useTeam() {
+  const { add } = useToast();
+  const [team, setTeam] = useState(supabaseEnabled ? [] : CORE_TEAM_DATA);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchTeam().then(r=>{ if (alive) setTeam(r); }).catch(()=>add("Couldn't load core team","error"));
+    return ()=>{ alive = false; };
+  },[]);
+  const addTeamMember = async (m) => {
+    if (supabaseEnabled) { try { const c = await addTeamMemberDb(m); setTeam(l=>[...l,c]); return true; } catch { add("Couldn't add member. Is a club linked to your account?","error"); return false; } }
+    setTeam(l=>[...l,{id:Date.now(),...m}]); return true;
+  };
+  const removeTeamMember = async (id) => {
+    if (supabaseEnabled) { try { await removeTeamMemberDb(id); } catch { add("Couldn't remove member","error"); return false; } }
+    setTeam(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  return { team, addTeamMember, removeTeamMember };
 }
 
 // ─── MY PROFILE (shared) ───────────────────────────────────────────────────
@@ -1225,13 +1259,14 @@ function MessagesPage({ canEdit=false }) {
 function ClubDashboard({ setPage }) {
   const { events, setEvents, removeEvent, addEventRecord } = useEvents();
   const { followers, removeFollower, loading: followersLoading } = useFollowers();
+  const { team: coreTeam } = useTeam();
   const [editEvents, setEditEvents] = useState(false);
   const [editFollowers, setEditFollowers] = useState(false);
   const [loading, setLoading] = useState(true);
   const { add } = useToast();
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),800);return()=>clearTimeout(t);},[]);
   if (loading||followersLoading) return <SkeletonPage/>;
-  const totalMembers = CORE_TEAM_DATA.length+followers.length;
+  const totalMembers = coreTeam.length+followers.length;
   return (
     <div className="space-y-5">
       <div className="rounded-2xl p-6 text-white" style={{background:"linear-gradient(135deg,#1e1b4b 0%,#4c1d95 100%)"}}>
@@ -1242,8 +1277,8 @@ function ClubDashboard({ setPage }) {
       <div className="grid grid-cols-2 gap-3">
         <StatCard label="Total Events" value={String(events.length)} sub="All time" gradient="bg-gradient-to-br from-violet-500 to-indigo-700" onClick={()=>setPage("events")}/>
         <StatCard label="Registrations" value="156" sub="This month" gradient="bg-gradient-to-br from-amber-400 to-orange-500" onClick={()=>setPage("applications")}/>
-        <StatCard label="Registered Members" value={String(totalMembers)} sub={`${CORE_TEAM_DATA.length} core · ${followers.length} followers`} gradient="bg-gradient-to-br from-emerald-400 to-teal-600" onClick={()=>setPage("profile")}/>
-        <StatCard label="Core Team" value={String(CORE_TEAM_DATA.length)} gradient="bg-gradient-to-br from-rose-400 to-pink-600" onClick={()=>setPage("profile")}/>
+        <StatCard label="Registered Members" value={String(totalMembers)} sub={`${coreTeam.length} core · ${followers.length} followers`} gradient="bg-gradient-to-br from-emerald-400 to-teal-600" onClick={()=>setPage("profile")}/>
+        <StatCard label="Core Team" value={String(coreTeam.length)} gradient="bg-gradient-to-br from-rose-400 to-pink-600" onClick={()=>setPage("profile")}/>
       </div>
       <Card>
         <SectionHeader title="All Events" action={!editEvents?"Manage":undefined} onAction={()=>setPage("events")} editing={editEvents} onToggleEdit={()=>setEditEvents(e=>!e)}/>
@@ -1502,11 +1537,11 @@ function AnnouncementsPage() {
 function ClubProfile() {
   const [editInfo, setEditInfo] = useState(false);
   const [info, setInfo] = useState({name:"Tech Society",tagline:"Building tomorrow, today",email:"techsociety@amity.edu",about:"Tech Society at Amity University is a student-run organization dedicated to fostering a passion for technology, innovation, and entrepreneurship."});
-  const [team, setTeam] = useState(CORE_TEAM_DATA);
+  const { team, addTeamMember, removeTeamMember } = useTeam();
   const [editTeam, setEditTeam] = useState(false);
   const [newMember, setNewMember] = useState({name:"",enroll:"",role:""});
   const { add } = useToast();
-  const addMember = () => { if (!newMember.name){add("Name required","error");return;} setTeam(l=>[...l,{id:Date.now(),...newMember}]); setNewMember({name:"",enroll:"",role:""}); add(`${newMember.name} added! 🎉`); };
+  const addMember = async () => { const mName = sanitizeText(newMember.name,80); if (!mName){add("Name required","error");return;} const ok = await addTeamMember({name:mName,enroll:sanitizeText(newMember.enroll,30),role:sanitizeText(newMember.role,50)}); if (!ok) return; setNewMember({name:"",enroll:"",role:""}); add(`${mName} added! 🎉`); };
   const inputCls = "w-full border border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200";
   return (
     <div className="space-y-5">
@@ -1527,7 +1562,7 @@ function ClubProfile() {
           <div key={m.id} className="flex items-center gap-3 py-2.5 border-b border-slate-50 dark:border-slate-700 last:border-0">
             <AvatarCircle name={m.name}/><div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{m.name}</p><p className="text-xs text-slate-400">{m.enroll}</p></div>
             <span className="text-xs bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2.5 py-0.5 rounded-full font-medium flex-shrink-0">{m.role}</span>
-            {editTeam&&<button onClick={()=>{setTeam(l=>l.filter(x=>x.id!==m.id));add(`Removed ${m.name}`,"info");}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
+            {editTeam&&<button onClick={()=>{removeTeamMember(m.id).then(ok=>{if(ok)add(`Removed ${m.name}`,"info");});}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
           </div>
         ))}
         {editTeam&&(<div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700"><p className="text-xs text-slate-500 dark:text-slate-400 font-medium mb-2">Add Member</p><div className="grid grid-cols-3 gap-2 mb-2">{[["Name","name"],["Enroll","enroll"],["Role","role"]].map(([ph,key])=>(<input key={key} placeholder={ph} value={newMember[key]} onChange={e=>setNewMember(m=>({...m,[key]:e.target.value}))} className="border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"/>))}</div><button onClick={addMember} className="text-sm bg-violet-600 text-white px-4 py-1.5 rounded-lg hover:bg-violet-700 active:scale-95 transition">Add Member</button></div>)}
@@ -1853,21 +1888,31 @@ function TechAdminClubs() {
 }
 
 function TechAdminAnalytics() {
-  const bars=[{label:"Amity",value:34,color:"bg-violet-500"},{label:"Chandigarh",value:51,color:"bg-indigo-500"},{label:"Manipal",value:62,color:"bg-blue-500"},{label:"VIT",value:78,color:"bg-cyan-500"}];
-  const max=Math.max(...bars.map(b=>b.value));
-  const growth=[{month:"Apr",users:820},{month:"May",users:940},{month:"Jun",users:1100},{month:"Jul",users:980},{month:"Aug",users:1340},{month:"Sep",users:1620}];
-  const gmax=Math.max(...growth.map(g=>g.users));
+  const { add } = useToast();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchAnalytics().then(r=>{ if (alive) setData(r); }).catch(()=>add("Couldn't load analytics","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  if (loading) return <SkeletonPage/>;
+  const colors = ["bg-violet-500","bg-indigo-500","bg-blue-500","bg-cyan-500","bg-emerald-500","bg-amber-500"];
+  const live = supabaseEnabled && data;
+  const bars = live ? data.byUni.map((b,i)=>({...b,color:colors[i%colors.length]})) : [{label:"Amity",value:34,color:"bg-violet-500"},{label:"Chandigarh",value:51,color:"bg-indigo-500"},{label:"Manipal",value:62,color:"bg-blue-500"},{label:"VIT",value:78,color:"bg-cyan-500"}];
+  const max = Math.max(1,...bars.map(b=>b.value));
+  const growth = live ? data.growth : [{month:"Apr",users:820},{month:"May",users:940},{month:"Jun",users:1100},{month:"Jul",users:980},{month:"Aug",users:1340},{month:"Sep",users:1620}];
+  const gmax = Math.max(1,...growth.map(g=>g.users));
+  const stats = live
+    ? [["Total Users",String(data.totalUsers),`+${data.newThisMonth} this month`,"from-violet-500 to-indigo-700"],["Events This Month",String(data.eventsThisMonth),`${data.publishedEvents} published overall`,"from-emerald-400 to-teal-600"],["Avg. Fill Rate",`${data.avgRate}%`,"Registered ÷ capacity","from-amber-400 to-orange-500"],["Registrations",String(data.regTotal),`${data.regThisMonth} this month`,"from-rose-400 to-pink-600"]]
+    : [["Monthly Active Users","4.2K","+18% vs last month","from-violet-500 to-indigo-700"],["Events This Month","225","+31% growth","from-emerald-400 to-teal-600"],["Avg. Registration Rate","74%","Per event","from-amber-400 to-orange-500"],["New Signups","1.6K","This month","from-rose-400 to-pink-600"]];
   return (
     <div className="space-y-5">
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">Analytics</h2><p className="text-slate-400 text-sm">Platform-level metrics</p></div>
-      <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Monthly Active Users" value="4.2K" sub="+18% vs last month" gradient="bg-gradient-to-br from-violet-500 to-indigo-700"/>
-        <StatCard label="Events This Month" value="225" sub="+31% growth" gradient="bg-gradient-to-br from-emerald-400 to-teal-600"/>
-        <StatCard label="Avg. Registration Rate" value="74%" sub="Per event" gradient="bg-gradient-to-br from-amber-400 to-orange-500"/>
-        <StatCard label="New Signups" value="1.6K" sub="This month" gradient="bg-gradient-to-br from-rose-400 to-pink-600"/>
-      </div>
-      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Events by University</h3><div className="space-y-3">{bars.map(b=>(<div key={b.label}><div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>{b.label}</span><span className="font-semibold text-slate-700 dark:text-slate-300">{b.value}</span></div><div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-2.5"><div className={`${b.color} h-2.5 rounded-full`} style={{width:`${(b.value/max)*100}%`}}/></div></div>))}</div></Card>
-      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">User Growth (6 Months)</h3><div className="flex items-end gap-3 h-32">{growth.map(g=>(<div key={g.month} className="flex-1 flex flex-col items-center gap-1"><p className="text-xs font-semibold text-slate-600 dark:text-slate-400">{g.users>=1000?(g.users/1000).toFixed(1)+"K":g.users}</p><div className="w-full rounded-t-lg bg-violet-500 dark:bg-violet-600" style={{height:`${(g.users/gmax)*96}px`}}/><p className="text-xs text-slate-400">{g.month}</p></div>))}</div></Card>
+      <div className="grid grid-cols-2 gap-3">{stats.map(([label,value,sub,g])=>(<StatCard key={label} label={label} value={value} sub={sub} gradient={`bg-gradient-to-br ${g}`}/>))}</div>
+      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Published Events by University</h3>{bars.length===0?<p className="text-sm text-slate-400">No published events yet.</p>:<div className="space-y-3">{bars.map(b=>(<div key={b.label}><div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>{b.label}</span><span className="font-semibold text-slate-700 dark:text-slate-300">{b.value}</span></div><div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-2.5"><div className={`${b.color} h-2.5 rounded-full`} style={{width:`${(b.value/max)*100}%`}}/></div></div>))}</div>}</Card>
+      <Card><h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">{live?"New Users per Month":"User Growth (6 Months)"}</h3><div className="flex items-end gap-3 h-32">{growth.map(g=>(<div key={g.month} className="flex-1 flex flex-col items-center gap-1"><p className="text-xs font-semibold text-slate-600 dark:text-slate-400">{g.users>=1000?(g.users/1000).toFixed(1)+"K":g.users}</p><div className="w-full rounded-t-lg bg-violet-500 dark:bg-violet-600" style={{height:`${Math.max(2,(g.users/gmax)*96)}px`}}/><p className="text-xs text-slate-400">{g.month}</p></div>))}</div></Card>
     </div>
   );
 }
@@ -1959,10 +2004,11 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   const { isDark, toggle: toggleDark } = useTheme();
   const { add } = useToast();
 
-  const unreadNotifs = NOTIFICATIONS_DATA.filter(n=>!n.read).length;
+  const unreadNotifs = notifState.notifs.filter(n=>!n.read).length;
   const goToPage = useCallback((p)=>{setPage(p);setSidebarOpen(false);},[]);
   const handleLoginRequired = useCallback(()=>{setScreen("auth");},[]);
   const { profile: myProfile } = useMyProfile();
+  const notifState = useNotifications(screen==="app"&&!isGuest);
   const handleLogout = useCallback(()=>{ if (onLogout) onLogout(); else setScreen("university"); },[onLogout]);
   const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); });
 
@@ -2015,7 +2061,7 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
 
   return (
     <div className={`flex flex-col h-screen overflow-hidden ${isDark?"dark bg-slate-900":"bg-slate-50"}`}>
-      {notifOpen&&<NotificationsPanel onClose={()=>setNotifOpen(false)}/>}
+      {notifOpen&&<NotificationsPanel onClose={()=>setNotifOpen(false)} notifs={notifState.notifs} markRead={notifState.markRead} markAll={notifState.markAll}/>}
       {idle.warning&&<SessionWarning remaining={idle.remaining} onStay={idle.stay} onLogout={handleLogout}/>}
       <div className="flex-shrink-0 bg-indigo-950 dark:bg-slate-950 flex items-center justify-center gap-1 py-2 px-4">
         <span className="text-indigo-500 text-xs mr-2 font-medium hidden sm:block">Portal:</span>

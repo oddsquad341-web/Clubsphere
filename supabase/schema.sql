@@ -307,3 +307,84 @@ create policy "posters upload" on storage.objects for insert with check (
   and (storage.foldername(name))[1] = auth.uid()::text);
 create policy "posters delete" on storage.objects for delete using (
   bucket_id = 'event-posters' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ── Batch 6i: notifications (server-generated), core team ────────────────────
+alter table public.notifications add column if not exists type text default 'event';
+alter table public.notifications add column if not exists emoji text default '🔔';
+
+-- clients can read/mark-read/delete their own notifications but cannot create them
+drop policy if exists "notif own" on public.notifications;
+create policy "notif read own" on public.notifications for select using (user_id = auth.uid());
+create policy "notif update own" on public.notifications for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "notif delete own" on public.notifications for delete using (user_id = auth.uid());
+
+create or replace function public.notify_registration() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare t text;
+begin
+  select title into t from public.events where id = new.event_id;
+  insert into public.notifications (user_id, title, body, type, emoji) values (
+    new.student_id,
+    case when new.status = 'pending' then 'Registration received' else 'Registration confirmed' end,
+    case when new.status = 'pending' then 'Payment pending for ' || coalesce(t, 'the event')
+         else 'You''re registered for ' || coalesce(t, 'the event') || ' ✓' end,
+    'success', '🎟️');
+  return new;
+end $$;
+drop trigger if exists notify_registration on public.registrations;
+create trigger notify_registration after insert on public.registrations
+  for each row execute function public.notify_registration();
+
+create or replace function public.notify_event() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare cname text; cemoji text;
+begin
+  if new.status = 'published' and (tg_op = 'INSERT' or old.status is distinct from 'published') and new.club_id is not null then
+    select name, emoji into cname, cemoji from public.clubs where id = new.club_id;
+    insert into public.notifications (user_id, title, body, type, emoji)
+      select f.student_id, 'New event: ' || new.title, coalesce(cname, 'A club') || ' just posted a new event', 'event', coalesce(cemoji, '📅')
+      from public.club_follows f where f.club_id = new.club_id;
+  end if;
+  if tg_op = 'UPDATE' and old.status = 'pending' and new.status in ('published','rejected') and new.created_by is not null then
+    insert into public.notifications (user_id, title, body, type, emoji) values (
+      new.created_by,
+      case when new.status = 'published' then 'Event approved' else 'Event rejected' end,
+      '"' || new.title || '" was ' || case when new.status = 'published' then 'approved by faculty' else 'rejected by faculty' end,
+      case when new.status = 'published' then 'success' else 'warning' end,
+      case when new.status = 'published' then '✅' else '❌' end);
+  end if;
+  return new;
+end $$;
+drop trigger if exists notify_event on public.events;
+create trigger notify_event after insert or update on public.events
+  for each row execute function public.notify_event();
+
+create or replace function public.notify_announcement() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare cname text;
+begin
+  if new.club_id is null then return new; end if;
+  select name into cname from public.clubs where id = new.club_id;
+  insert into public.notifications (user_id, title, body, type, emoji)
+    select f.student_id, 'Announcement from ' || coalesce(cname, 'your club'), new.title, 'announcement', coalesce(new.emoji, '📢')
+    from public.club_follows f where f.club_id = new.club_id;
+  return new;
+end $$;
+drop trigger if exists notify_announcement on public.announcements;
+create trigger notify_announcement after insert on public.announcements
+  for each row execute function public.notify_announcement();
+
+do $$ begin alter publication supabase_realtime add table public.notifications;
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.club_team_members (
+  id uuid primary key default gen_random_uuid(),
+  club_id uuid not null references public.clubs(id) on delete cascade,
+  name text not null, enrollment text, role_title text,
+  created_at timestamptz default now()
+);
+alter table public.club_team_members enable row level security;
+create policy "team staff" on public.club_team_members for all
+  using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
+create policy "team club admin" on public.club_team_members for all
+  using (public.is_club_admin(club_id)) with check (public.is_club_admin(club_id));

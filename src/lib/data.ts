@@ -437,3 +437,114 @@ export async function uploadPoster(file: File): Promise<string> {
   if (error) throw error;
   return supabase.storage.from("event-posters").getPublicUrl(path).data.publicUrl;
 }
+
+// ── Notifications ───────────────────────────────────────────────────────────
+export interface UiNotif { id: string | number; title: string; desc: string; time: string; read: boolean; type: string; emoji: string; }
+
+const ago = (iso: string) => {
+  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return "Just now";
+  if (m < 60) return `${m}m ago`;
+  if (m < 1440) return `${Math.floor(m / 60)}h ago`;
+  return `${Math.floor(m / 1440)}d ago`;
+};
+
+export async function fetchNotifications(): Promise<UiNotif[]> {
+  if (!supabase) return [];
+  const uid = await currentUserId();
+  if (!uid) return [];
+  const { data, error } = await supabase.from("notifications").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(50);
+  if (error) throw error;
+  return (data ?? []).map((n: any) => ({ id: n.id, title: n.title, desc: n.body ?? "", time: ago(n.created_at), read: !!n.read, type: n.type ?? "event", emoji: n.emoji ?? "🔔" }));
+}
+
+export async function markNotifRead(id: string | number) {
+  if (!supabase) return;
+  await supabase.from("notifications").update({ read: true }).eq("id", id);
+}
+
+export async function markAllNotifsRead() {
+  if (!supabase) return;
+  const uid = await currentUserId();
+  if (!uid) return;
+  await supabase.from("notifications").update({ read: true }).eq("user_id", uid).eq("read", false);
+}
+
+export async function subscribeNotifications(onChange: () => void): Promise<() => void> {
+  if (!supabase) return () => {};
+  const uid = await currentUserId();
+  if (!uid) return () => {};
+  const ch = supabase.channel(`notifs-${uid}`)
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` }, onChange)
+    .subscribe();
+  return () => { supabase!.removeChannel(ch); };
+}
+
+// ── Core team ───────────────────────────────────────────────────────────────
+export interface UiTeamMember { id: string | number; name: string; enroll: string; role: string; }
+
+export async function fetchTeam(): Promise<UiTeamMember[]> {
+  if (!supabase) return [];
+  const club = await fetchMyClub();
+  if (!club) return [];
+  const { data, error } = await supabase.from("club_team_members").select("*").eq("club_id", club.id).order("created_at");
+  if (error) throw error;
+  return (data ?? []).map((m: any) => ({ id: m.id, name: m.name, enroll: m.enrollment ?? "", role: m.role_title ?? "" }));
+}
+
+export async function addTeamMemberDb(m: { name: string; enroll: string; role: string }): Promise<UiTeamMember> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const club = await fetchMyClub();
+  if (!club) throw new Error("No club linked to this account");
+  const { data, error } = await supabase.from("club_team_members").insert({ club_id: club.id, name: m.name, enrollment: m.enroll, role_title: m.role }).select("*").single();
+  if (error) throw error;
+  return { id: data.id, name: data.name, enroll: data.enrollment ?? "", role: data.role_title ?? "" };
+}
+
+export async function removeTeamMemberDb(id: string | number) {
+  if (!supabase) return;
+  const { error } = await supabase.from("club_team_members").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ── Platform analytics (Tech Admin) ─────────────────────────────────────────
+export interface Analytics {
+  totalUsers: number; newThisMonth: number; eventsThisMonth: number; publishedEvents: number;
+  regTotal: number; regThisMonth: number; avgRate: number;
+  byUni: { label: string; value: number }[]; growth: { month: string; users: number }[];
+}
+
+export async function fetchAnalytics(): Promise<Analytics> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const now = new Date();
+  const startOf = (offset: number) => new Date(now.getFullYear(), now.getMonth() + offset, 1).toISOString();
+  const count = async (table: string, from?: string, to?: string) => {
+    let q = supabase!.from(table).select("*", { count: "exact", head: true });
+    if (from) q = q.gte("created_at", from);
+    if (to) q = q.lt("created_at", to);
+    const { count: c, error } = await q;
+    if (error) throw error;
+    return c ?? 0;
+  };
+  const months = [-5, -4, -3, -2, -1, 0];
+  const [totalUsers, regTotal, eventsThisMonth, regThisMonth, growthCounts, ev, st] = await Promise.all([
+    count("profiles"), count("registrations"), count("events", startOf(0)), count("registrations", startOf(0)),
+    Promise.all(months.map(o => count("profiles", startOf(o), startOf(o + 1)))),
+    supabase.from("events").select("id,spots,status,clubs(universities(name))").eq("status", "published").limit(1000),
+    supabase.from("event_stats").select("event_id,registered"),
+  ]);
+  if (ev.error) throw ev.error;
+  const regByEvent: Record<string, number> = {};
+  (st.data ?? []).forEach((s: any) => { regByEvent[s.event_id] = Number(s.registered); });
+  const published = ev.data ?? [];
+  const spots = published.reduce((a: number, e: any) => a + (e.spots ?? 0), 0);
+  const filled = published.reduce((a: number, e: any) => a + Math.min(regByEvent[e.id] ?? 0, e.spots ?? 0), 0);
+  const uni: Record<string, number> = {};
+  published.forEach((e: any) => { const n = e.clubs?.universities?.name ?? "Unassigned"; uni[n] = (uni[n] ?? 0) + 1; });
+  return {
+    totalUsers, newThisMonth: growthCounts[5], eventsThisMonth, publishedEvents: published.length, regTotal, regThisMonth,
+    avgRate: spots ? Math.round((filled / spots) * 100) : 0,
+    byUni: Object.entries(uni).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 6),
+    growth: months.map((o, i) => ({ month: new Date(now.getFullYear(), now.getMonth() + o, 1).toLocaleString("en-IN", { month: "short" }), users: growthCounts[i] })),
+  };
+}
