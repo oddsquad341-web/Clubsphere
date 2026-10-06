@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -670,6 +670,46 @@ function useUsers() {
   return { users, loading, me, toggleUserStatus, changeUserRole };
 }
 
+function useClubRegistrations() {
+  const { add } = useToast();
+  const [regs, setRegs] = useState(supabaseEnabled ? [] : REGISTRATIONS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchClubRegistrations().then(r=>{ if (alive) setRegs(r); }).catch(()=>add("Couldn't load registrations","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const toggleAttendance = async (id) => {
+    const r = regs.find(x=>x.id===id); if (!r) return;
+    const next = !r.attended;
+    setRegs(l=>l.map(x=>x.id===id?{...x,attended:next}:x)); // optimistic
+    if (supabaseEnabled) { try { await setAttendedDb(id, next); } catch { setRegs(l=>l.map(x=>x.id===id?{...x,attended:!next}:x)); add("Couldn't save attendance","error"); } }
+  };
+  const removeRegistration = async (id) => {
+    if (supabaseEnabled) { try { await cancelRegistrationDb(id); } catch { add("Couldn't remove registration","error"); return false; } }
+    setRegs(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  return { regs, loading, toggleAttendance, removeRegistration };
+}
+
+function useFollowers() {
+  const { add } = useToast();
+  const [followers, setFollowers] = useState(supabaseEnabled ? [] : FOLLOWERS_DATA);
+  const [loading, setLoading] = useState(supabaseEnabled);
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    let alive = true;
+    fetchFollowers().then(r=>{ if (alive) setFollowers(r); }).catch(()=>add("Couldn't load followers","error")).finally(()=>{ if (alive) setLoading(false); });
+    return ()=>{ alive = false; };
+  },[]);
+  const removeFollower = async (id) => {
+    if (supabaseEnabled) { try { await removeFollowerDb(id); } catch { add("Couldn't remove follower","error"); return false; } }
+    setFollowers(l=>l.filter(x=>x.id!==id)); return true;
+  };
+  return { followers, loading, removeFollower };
+}
+
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
 
 function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
@@ -1151,13 +1191,13 @@ function MessagesPage({ canEdit=false }) {
 
 function ClubDashboard({ setPage }) {
   const { events, setEvents, removeEvent, addEventRecord } = useEvents();
-  const [followers, setFollowers] = useState(FOLLOWERS_DATA);
+  const { followers, removeFollower, loading: followersLoading } = useFollowers();
   const [editEvents, setEditEvents] = useState(false);
   const [editFollowers, setEditFollowers] = useState(false);
   const [loading, setLoading] = useState(true);
   const { add } = useToast();
   useEffect(()=>{const t=setTimeout(()=>setLoading(false),800);return()=>clearTimeout(t);},[]);
-  if (loading) return <SkeletonPage/>;
+  if (loading||followersLoading) return <SkeletonPage/>;
   const totalMembers = CORE_TEAM_DATA.length+followers.length;
   return (
     <div className="space-y-5">
@@ -1189,7 +1229,7 @@ function ClubDashboard({ setPage }) {
           followers.map(f=>(
             <div key={f.id} className="flex items-center gap-3 py-2 border-b border-slate-50 dark:border-slate-700 last:border-0">
               <AvatarCircle name={f.name}/><div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{f.name}</p><p className="text-xs text-slate-400">{f.enroll}</p></div>
-              {editFollowers&&<button onClick={()=>{setFollowers(l=>l.filter(x=>x.id!==f.id));add(`Removed ${f.name}`,"info");}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
+              {editFollowers&&<button onClick={()=>{removeFollower(f.id).then(ok=>{if(ok)add(`Removed ${f.name}`,"info");});}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={13}/></button>}
             </div>
           ))
         )}
@@ -1204,7 +1244,7 @@ function ClubAllEvents() {
   const [editing, setEditing] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [fields, setFields] = useState({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
-  const [attendance, setAttendance] = useState({});
+  const { regs: allRegs, toggleAttendance } = useClubRegistrations();
   const { add } = useToast();
   const addEvent = async () => {
     const evTitle = sanitizeText(fields.title,100);
@@ -1213,9 +1253,6 @@ function ClubAllEvents() {
     if (!created) return;
     setFields({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
     setShowForm(false); add(created.status==="pending"?`"${evTitle}" sent to faculty for approval`:`"${evTitle}" created! 🎉`);
-  };
-  const toggleAttend = (eventId, studentId) => {
-    setAttendance(a => ({...a, [`${eventId}-${studentId}`]: !a[`${eventId}-${studentId}`]}));
   };
   return (
     <div className="space-y-5">
@@ -1244,7 +1281,7 @@ function ClubAllEvents() {
       {events.length===0?<EmptyState emoji="📅" title="No events yet" desc="Create your first event." action="Create Event" onAction={()=>setShowForm(true)}/>:(
         <div className="space-y-3">
           {events.map(e=>{
-            const regs=REGISTRATIONS_DATA.filter(r=>r.event===e.title);
+            const regs=allRegs.filter(r=>supabaseEnabled?r.eventId===e.id:r.event===e.title);
             const isExpanded=expandedId===e.id;
             return (
               <Card key={e.id}>
@@ -1282,15 +1319,15 @@ function ClubAllEvents() {
                         </div>
                         {regs.map(r=>(
                           <div key={r.id} className="flex items-center gap-3 py-2 border-b border-slate-50 dark:border-slate-700 last:border-0">
-                            <button onClick={()=>toggleAttend(e.id,r.id)} className="flex-shrink-0 text-slate-400 hover:text-violet-600 transition">
-                              {attendance[`${e.id}-${r.id}`]?<CheckSquare size={18} className="text-emerald-600"/>:<Square size={18}/>}
+                            <button onClick={()=>toggleAttendance(r.id)} aria-label={`Mark ${r.student} ${r.attended?"absent":"present"}`} className="flex-shrink-0 text-slate-400 hover:text-violet-600 transition">
+                              {r.attended?<CheckSquare size={18} className="text-emerald-600"/>:<Square size={18}/>}
                             </button>
                             <AvatarCircle name={r.student}/>
                             <div className="flex-1"><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{r.student}</p><p className="text-xs text-slate-400">{r.enroll}</p></div>
-                            {attendance[`${e.id}-${r.id}`]&&<span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✓ Present</span>}
+                            {r.attended&&<span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✓ Present</span>}
                           </div>
                         ))}
-                        <button onClick={()=>add("Attendance saved! ✓")} className="mt-3 text-sm bg-emerald-600 text-white px-4 py-1.5 rounded-lg hover:bg-emerald-700 transition">Save Attendance</button>
+                        {supabaseEnabled?<p className="mt-3 text-xs text-slate-400">Attendance saves automatically.</p>:<button onClick={()=>add("Attendance saved! ✓")} className="mt-3 text-sm bg-emerald-600 text-white px-4 py-1.5 rounded-lg hover:bg-emerald-700 transition">Save Attendance</button>}
                       </div>
                     )}
                     <div className="grid grid-cols-2 gap-2">
@@ -1313,10 +1350,11 @@ function ClubAllEvents() {
 }
 
 function RegistrationsPage() {
-  const [regs, setRegs] = useState(REGISTRATIONS_DATA);
+  const { regs, loading: regsLoading, removeRegistration } = useClubRegistrations();
   const [editing, setEditing] = useState(false);
   const [filter, setFilter] = useState("all");
   const { add } = useToast();
+  if (regsLoading) return <SkeletonPage/>;
   const filtered = regs.filter(r => filter==="all" || r.event===filter);
   const events = [...new Set(regs.map(r=>r.event))];
   return (
@@ -1345,7 +1383,7 @@ function RegistrationsPage() {
               <AvatarCircle name={r.student}/>
               <div className="flex-1 min-w-0"><p className="font-medium text-slate-800 dark:text-slate-200 text-sm">{r.student}</p><p className="text-xs text-slate-400">{r.enroll} · {r.event}</p><p className="text-xs text-slate-400 mt-0.5">Registered {r.applied}</p></div>
               <StatusBadge status="approved"/>
-              {editing&&<button onClick={()=>{setRegs(l=>l.filter(x=>x.id!==r.id));add(`Removed ${r.student}`,"info");}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={14}/></button>}
+              {editing&&<button onClick={()=>{removeRegistration(r.id).then(ok=>{if(ok)add(`Removed ${r.student}`,"info");});}} className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-900/20 text-rose-400 hover:bg-rose-100 transition flex-shrink-0"><Trash2 size={14}/></button>}
             </Card>
           ))}
         </div>

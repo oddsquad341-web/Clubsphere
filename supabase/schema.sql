@@ -225,3 +225,70 @@ end $$;
 drop trigger if exists events_guard_status on public.events;
 create trigger events_guard_status before insert or update on public.events
   for each row execute function public.events_guard_status();
+
+-- ── Batch 6g: per-club access control (fixes over-broad club policies) ───────
+-- Before this block ANY club admin could read/edit ANY club's events, registrations,
+-- announcements and roles. Run this block to scope everything to the admin's own club.
+create or replace function public.is_club_admin(cid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.app_role() = 'club' and exists (select 1 from public.clubs where id = cid and admin_id = auth.uid())
+$$;
+create or replace function public.is_event_club_admin(eid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.app_role() = 'club' and exists (
+    select 1 from public.events e join public.clubs c on c.id = e.club_id where e.id = eid and c.admin_id = auth.uid())
+$$;
+
+-- events
+drop policy if exists "events read" on public.events;
+drop policy if exists "events manage" on public.events;
+create policy "events read" on public.events for select
+  using (status = 'published' or public.app_role() in ('faculty','techAdmin') or public.is_club_admin(club_id));
+create policy "events staff manage" on public.events for all
+  using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
+create policy "events club manage" on public.events for all
+  using (public.is_club_admin(club_id)) with check (public.is_club_admin(club_id));
+
+-- clubs
+drop policy if exists "clubs manage" on public.clubs;
+create policy "clubs staff manage" on public.clubs for all
+  using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
+create policy "clubs own update" on public.clubs for update
+  using (public.is_club_admin(id)) with check (public.is_club_admin(id) and admin_id = auth.uid());
+
+-- announcements + volunteer roles
+drop policy if exists "announcements manage" on public.announcements;
+create policy "announcements staff manage" on public.announcements for all
+  using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
+create policy "announcements club manage" on public.announcements for all
+  using (public.is_club_admin(club_id)) with check (public.is_club_admin(club_id));
+drop policy if exists "volunteer manage" on public.volunteer_roles;
+create policy "volunteer staff manage" on public.volunteer_roles for all
+  using (public.app_role() in ('faculty','techAdmin')) with check (public.app_role() in ('faculty','techAdmin'));
+create policy "volunteer club manage" on public.volunteer_roles for all
+  using (public.is_club_admin(club_id)) with check (public.is_club_admin(club_id));
+
+-- registrations: students own; club admins only for their own events; staff all
+drop policy if exists "reg read" on public.registrations;
+drop policy if exists "reg organiser update" on public.registrations;
+drop policy if exists "reg insert own" on public.registrations;
+create policy "reg read" on public.registrations for select
+  using (student_id = auth.uid() or public.app_role() in ('faculty','techAdmin') or public.is_event_club_admin(event_id));
+create policy "reg organiser update" on public.registrations for update
+  using (public.app_role() in ('faculty','techAdmin') or public.is_event_club_admin(event_id));
+create policy "reg insert own" on public.registrations for insert
+  with check (student_id = auth.uid() and exists (select 1 from public.events e where e.id = event_id and e.status = 'published'));
+
+-- follows: club admins see/remove only their own club's followers
+drop policy if exists "follows organiser read" on public.club_follows;
+create policy "follows organiser read" on public.club_follows for select
+  using (public.is_club_admin(club_id) or public.app_role() in ('faculty','techAdmin'));
+create policy "follows club remove" on public.club_follows for delete using (public.is_club_admin(club_id));
+
+-- let a club admin see names of students who follow or registered with their club
+create policy "profiles club read" on public.profiles for select using (
+  exists (select 1 from public.club_follows f join public.clubs c on c.id = f.club_id
+          where f.student_id = profiles.id and c.admin_id = auth.uid())
+  or exists (select 1 from public.registrations r join public.events e on e.id = r.event_id join public.clubs c on c.id = e.club_id
+          where r.student_id = profiles.id and c.admin_id = auth.uid())
+);

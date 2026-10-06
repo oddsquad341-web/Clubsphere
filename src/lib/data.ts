@@ -345,3 +345,56 @@ export async function fetchApprovalAudit(): Promise<AuditEntry[]> {
     color: a.action === "Approved" ? "emerald" : "rose",
   }));
 }
+
+// ── Club admin: registrations, attendance, followers ────────────────────────
+export interface UiReg { id: string | number; student: string; enroll: string; event: string; eventId: string | number | null; applied: string; status: string; attended: boolean; }
+
+export async function fetchClubRegistrations(): Promise<UiReg[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("registrations")
+    .select("id,status,attended,created_at,event_id,events(title),profiles(full_name,email,phone,enrollment)")
+    .neq("status", "cancelled").order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    id: r.id, student: r.profiles?.full_name || r.profiles?.email || r.profiles?.phone || "Student",
+    enroll: r.profiles?.enrollment || r.profiles?.email || r.profiles?.phone || "—",
+    event: r.events?.title ?? "Event", eventId: r.event_id,
+    applied: new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+    status: r.status === "confirmed" ? "approved" : r.status, attended: !!r.attended,
+  }));
+}
+
+export async function setAttendedDb(regId: string | number, attended: boolean) {
+  if (!supabase) return;
+  const { error } = await supabase.from("registrations").update({ attended }).eq("id", regId);
+  if (error) throw error;
+}
+
+export async function cancelRegistrationDb(regId: string | number) {
+  if (!supabase) return;
+  const { error } = await supabase.from("registrations").update({ status: "cancelled" }).eq("id", regId);
+  if (error) throw error;
+}
+
+export interface UiFollower { id: string | number; name: string; enroll: string; }
+
+export async function fetchFollowers(): Promise<UiFollower[]> {
+  if (!supabase) return [];
+  const club = await fetchMyClub();
+  if (!club) return [];
+  const { data, error } = await supabase.from("club_follows").select("student_id,profiles(full_name,email,phone,enrollment)").eq("club_id", club.id);
+  if (error) throw error;
+  return (data ?? []).map((f: any) => ({
+    id: f.student_id, name: f.profiles?.full_name || f.profiles?.email || f.profiles?.phone || "Student",
+    enroll: f.profiles?.enrollment || f.profiles?.email || f.profiles?.phone || "—",
+  }));
+}
+
+export async function removeFollowerDb(studentId: string | number) {
+  if (!supabase) return;
+  const club = await fetchMyClub();
+  if (!club) return;
+  const { error } = await supabase.from("club_follows").delete().eq("club_id", club.id).eq("student_id", studentId);
+  if (error) throw error;
+}
