@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from "react";
-import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb } from "./lib/data";
+import { fetchEvents, createEventDb, deleteEventDb, getMyRegistration, registerForEvent, fetchClubs, setFollow, fetchMyApplications, fetchUniversities, createUniversityDb, setUniversityActive, setMyUniversity, fetchMyClub, fetchAnnouncements, createAnnouncementDb, deleteAnnouncementDb, fetchRoles, createRoleDb, deleteRoleDb, fetchUsers, updateUserRole, setUserStatus, currentUserId, logAudit, fetchAdminClubs, createClubDb, assignClubAdmin, fetchPendingEvents, setEventStatus, fetchApprovalAudit, fetchClubRegistrations, setAttendedDb, cancelRegistrationDb, fetchFollowers, removeFollowerDb, fetchMyProfile, saveMyProfile, uploadPoster } from "./lib/data";
 import { supabaseEnabled, sendOtp, verifyOtp, getProfile, getCurrentSession, signOut, friendlyAuthError } from "./lib/supabase";
 import {
   LayoutDashboard, Search, Bell, Menu, Calendar, Users, FileText,
@@ -402,6 +402,9 @@ function PaymentModal({ event, onClose, onSuccess }) {
 // ─── CERTIFICATE MODAL ────────────────────────────────────────────────────────
 
 function CertificateModal({ app, onClose }) {
+  const { profile } = useMyProfile();
+  const certName = profile.name||'Student';
+  const certLine = [profile.enroll,profile.university].filter(Boolean).join(' · ');
   const { add } = useToast();
   const canvasRef = useRef(null);
   useEffect(() => {
@@ -451,11 +454,11 @@ function CertificateModal({ app, onClose }) {
     // Name
     ctx.fillStyle = '#1e1b4b';
     ctx.font = 'bold 36px serif';
-    ctx.fillText('Aryan Gupta', 400, 270);
+    ctx.fillText(certName, 400, 270);
     // Enrollment
     ctx.fillStyle = '#7c3aed';
     ctx.font = '13px sans-serif';
-    ctx.fillText('A2K22001 · Amity University', 400, 300);
+    ctx.fillText(certLine, 400, 300);
     // Participated in
     ctx.fillStyle = '#64748b';
     ctx.font = '15px sans-serif';
@@ -478,7 +481,7 @@ function CertificateModal({ app, onClose }) {
     ctx.textAlign = 'left'; ctx.fillText('Faculty Coordinator', 140, 490);
     ctx.textAlign = 'center'; ctx.fillText('Issued by ClubSphere · Amity University', 400, 490);
     ctx.textAlign = 'right'; ctx.fillText(new Date().toLocaleDateString('en-IN'), 660, 490);
-  }, [app]);
+  }, [app, certName, certLine]);
   const download = () => {
     const canvas = canvasRef.current;
     const url = canvas.toDataURL('image/png');
@@ -710,6 +713,31 @@ function useFollowers() {
   return { followers, loading, removeFollower };
 }
 
+// ─── MY PROFILE (shared) ───────────────────────────────────────────────────
+const DEMO_PROFILE = {name:"Aryan Gupta",enroll:"A2K22001",branch:"BTech Computer Science",year:"3rd Year",email:"aryan.gupta@amity.edu",phone:"+91 98765 43210",bio:"Passionate about technology and innovation. Core member of Tech Society and TEDx Club.",interests:["Technology","Leadership","Business"],university:"Amity University"};
+const EMPTY_PROFILE = {name:"",enroll:"",branch:"",year:"",email:"",phone:"",bio:"",interests:[],university:""};
+const ProfileContext = createContext({ profile: DEMO_PROFILE, save: async (_p) => true });
+const useMyProfile = () => useContext(ProfileContext);
+
+function ProfileProvider({ session, children }) {
+  const { add } = useToast();
+  const [profile, setProfile] = useState(supabaseEnabled ? EMPTY_PROFILE : DEMO_PROFILE);
+  const signedIn = !!session && !session.isGuest;
+  useEffect(()=>{
+    if (!supabaseEnabled) return;
+    if (!signedIn) { setProfile(EMPTY_PROFILE); return; }
+    let alive = true;
+    fetchMyProfile().then(r=>{ if (alive&&r) setProfile(r); }).catch(()=>{});
+    return ()=>{ alive = false; };
+  },[signedIn, session?.role]);
+  const save = async (next) => {
+    const clean = { name:sanitizeText(next.name,80), enroll:sanitizeText(next.enroll,30), branch:sanitizeText(next.branch,80), year:sanitizeText(next.year,30), bio:sanitizeText(next.bio,500), interests:(next.interests||[]).slice(0,10).map(i=>sanitizeText(i,30)) };
+    if (supabaseEnabled) { try { await saveMyProfile(clean); } catch { add("Couldn't save profile","error"); return false; } }
+    setProfile(p=>({...p,...clean})); return true;
+  };
+  return <ProfileContext.Provider value={{ profile, save }}>{children}</ProfileContext.Provider>;
+}
+
 // ─── EVENT DETAIL MODAL ───────────────────────────────────────────────────────
 
 function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
@@ -740,6 +768,7 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
       {showPayment && <PaymentModal event={event} onClose={()=>setShowPayment(false)} onSuccess={async ()=>{ await saveRegistration(true); onClose(); }}/>}
       <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" style={{background:"rgba(0,0,0,0.6)"}} onClick={onClose}>
         <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
+          {event.poster_url&&<img src={event.poster_url} alt={`${event.title} poster`} loading="lazy" className="w-full max-h-52 object-cover"/>}
           <div className="p-5 border-b border-slate-100 dark:border-slate-700">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
@@ -794,6 +823,7 @@ function EventDetailModal({ event, onClose, isGuest, onLoginRequired }) {
 
 function QRTicketModal({ app, onClose }) {
   const { add } = useToast();
+  const { profile } = useMyProfile();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{background:"rgba(0,0,0,0.6)"}} onClick={onClose}>
       <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-xs shadow-2xl overflow-hidden" onClick={e=>e.stopPropagation()}>
@@ -811,7 +841,7 @@ function QRTicketModal({ app, onClose }) {
             <div className="absolute inset-0 flex items-center justify-center"><div className="w-8 h-8 bg-white dark:bg-slate-800 rounded flex items-center justify-center text-lg">🎫</div></div>
           </div>
           <p className="text-xs text-slate-400 mb-1">Enrollment No.</p>
-          <p className="font-mono font-bold text-slate-800 dark:text-white text-lg">A2K22001</p>
+          <p className="font-mono font-bold text-slate-800 dark:text-white text-lg">{profile.enroll||"—"}</p>
           <p className="text-xs text-slate-400 mt-3 text-center">Show this QR at the venue for entry</p>
           <button onClick={()=>add("Ticket downloaded!","info")} className="mt-4 flex items-center gap-2 text-sm text-violet-600 dark:text-violet-400 font-medium hover:underline"><Download size={14}/>Download Ticket</button>
         </div>
@@ -947,6 +977,7 @@ function GuestBanner({ onLogin }) {
 // ─── STUDENT PAGES ────────────────────────────────────────────────────────────
 
 function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
+  const { profile: me } = useMyProfile();
   const { events } = useEvents();
   const { apps } = useMyApps();
   const { clubs: dashClubs } = useClubs();
@@ -959,7 +990,7 @@ function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
       {selectedEvent&&<EventDetailModal event={selectedEvent} onClose={()=>setSelectedEvent(null)} isGuest={isGuest} onLoginRequired={onLoginRequired}/>}
       <div className="rounded-2xl p-6 text-white" style={{background:"linear-gradient(135deg,#1e1b4b 0%,#4c1d95 100%)"}}>
         <p className="text-violet-300 text-sm font-medium mb-1">{isGuest?"👀 Browsing as guest":"Good morning 👋"}</p>
-        <h2 className="text-2xl font-bold mb-1">{isGuest?"Welcome to ClubSphere":"Welcome back, Aryan"}</h2>
+        <h2 className="text-2xl font-bold mb-1">{isGuest?"Welcome to ClubSphere":`Welcome back, ${(me.name||"").split(" ")[0]||"there"}`}</h2>
         <p className="text-indigo-200 text-sm">{isGuest?"Sign in to register and follow clubs":`${events.filter(e=>e.status==="published").length} upcoming events · ${apps.length} registrations`}</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -1004,7 +1035,9 @@ function StudentDashboard({ setPage, isGuest, onLoginRequired }) {
 
 function StudentProfile() {
   const [editing, setEditing] = useState(false);
-  const [info, setInfo] = useState({ name:"Aryan Gupta", enroll:"A2K22001", branch:"BTech Computer Science", year:"3rd Year", email:"aryan.gupta@amity.edu", phone:"+91 98765 43210", bio:"Passionate about technology and innovation. Core member of Tech Society and TEDx Club.", interests:["Technology","Leadership","Business"] });
+  const { profile, save } = useMyProfile();
+  const [info, setInfo] = useState(profile);
+  useEffect(()=>{ if (!editing) setInfo(profile); },[profile,editing]);
   const { add } = useToast();
   const interests = ["Technology","Leadership","Academic","Cultural","Business","Arts","Sports"];
   const toggleInterest = (i) => setInfo(s=>({...s,interests:s.interests.includes(i)?s.interests.filter(x=>x!==i):[...s.interests,i]}));
@@ -1014,17 +1047,17 @@ function StudentProfile() {
       <div><h2 className="text-xl font-bold text-slate-800 dark:text-white">My Profile</h2><p className="text-slate-400 text-sm">Manage your personal information</p></div>
       <Card>
         <div className="flex items-center gap-4 mb-5 pb-5 border-b border-slate-100 dark:border-slate-700">
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-2xl font-bold flex-shrink-0" style={{background:"linear-gradient(135deg,#7c3aed,#4f46e5)"}}>A</div>
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-2xl font-bold flex-shrink-0" style={{background:"linear-gradient(135deg,#7c3aed,#4f46e5)"}}>{(info.name||"?").trim().charAt(0).toUpperCase()}</div>
           <div className="flex-1">
             <p className="font-bold text-slate-800 dark:text-white text-lg">{info.name}</p>
             <p className="text-slate-400 text-sm">{info.enroll} · {info.branch}</p>
-            <p className="text-xs text-violet-600 dark:text-violet-400 font-medium mt-0.5">{info.year} · Amity University</p>
+            <p className="text-xs text-violet-600 dark:text-violet-400 font-medium mt-0.5">{[info.year,profile.university].filter(Boolean).join(" · ")||"—"}</p>
           </div>
-          <button onClick={()=>{setEditing(e=>!e);if(editing)add("Profile saved!");}} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
+          <button onClick={async ()=>{ if(!editing){setEditing(true);return;} if(!sanitizeText(info.name,80)){add("Name is required","error");return;} if(await save(info)){setEditing(false);add("Profile saved!");} }} className={`p-2 rounded-lg transition ${editing?"bg-violet-100 dark:bg-violet-900/30 text-violet-600":"text-slate-300 hover:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}>{editing?<CheckCircle size={16}/>:<Pencil size={16}/>}</button>
         </div>
         <div className="space-y-4">
           {[["Full Name","name"],["Enrollment No.","enroll"],["Branch","branch"],["Year","year"],["Email","email"],["Phone","phone"]].map(([label,key])=>(
-            <div key={key}><label className="text-xs text-slate-400 mb-1.5 block font-medium">{label}</label>{editing?<input value={info[key]} onChange={e=>setInfo(i=>({...i,[key]:e.target.value}))} className={inputCls}/>:<p className="text-sm text-slate-800 dark:text-slate-200 px-3 py-2.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl">{info[key]}</p>}</div>
+            <div key={key}><label className="text-xs text-slate-400 mb-1.5 block font-medium">{label}</label>{editing&&!(supabaseEnabled&&(key==="email"||key==="phone"))?<input value={info[key]} onChange={e=>setInfo(i=>({...i,[key]:e.target.value}))} className={inputCls}/>:<p className="text-sm text-slate-800 dark:text-slate-200 px-3 py-2.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl">{info[key]||"—"}</p>}</div>
           ))}
           <div><label className="text-xs text-slate-400 mb-1.5 block font-medium">Bio</label>{editing?<textarea rows={3} value={info.bio} onChange={e=>setInfo(i=>({...i,bio:e.target.value}))} className={`${inputCls} resize-none`}/>:<p className="text-sm text-slate-800 dark:text-slate-200 px-3 py-2.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl leading-relaxed">{info.bio}</p>}</div>
           <div>
@@ -1245,12 +1278,19 @@ function ClubAllEvents() {
   const [expandedId, setExpandedId] = useState(null);
   const [fields, setFields] = useState({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
   const { regs: allRegs, toggleAttendance } = useClubRegistrations();
+  const [posterFile, setPosterFile] = useState(null);
   const { add } = useToast();
   const addEvent = async () => {
     const evTitle = sanitizeText(fields.title,100);
     if (!evTitle){add("Event name required","error");return;}
-    const created = await addEventRecord({title:evTitle,date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status});
+    let poster_url = null;
+    if (posterFile&&supabaseEnabled) {
+      try { poster_url = await uploadPoster(posterFile); }
+      catch (err) { add(/under|Unsupported/.test(err?.message||"")?err.message:"Couldn't upload poster","error"); return; }
+    }
+    const created = await addEventRecord({poster_url,title:evTitle,date:sanitizeText(fields.date,40)||"TBD",time:"TBD",venue:sanitizeText(fields.venue,120)||"TBD",category:sanitizeText(fields.category,40)||"General",spots:parseInt(fields.spots)||100,emoji:"📌",desc:"",price:parseInt(fields.price)||0,status:fields.status});
     if (!created) return;
+    setPosterFile(null);
     setFields({title:"",date:"",venue:"",spots:"",category:"",price:"0",status:"published"});
     setShowForm(false); add(created.status==="pending"?`"${evTitle}" sent to faculty for approval`:`"${evTitle}" created! 🎉`);
   };
@@ -1274,6 +1314,11 @@ function ClubAllEvents() {
               <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Status</label>
               <div className="flex gap-2">{[["published","Published ✓"],["draft","Draft"],["scheduled","Scheduled"]].map(([val,label])=>(<button key={val} onClick={()=>setFields(f=>({...f,status:val}))} className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition ${fields.status===val?"bg-violet-600 text-white border-violet-600":"bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600"}`}>{label}</button>))}</div>
             </div>
+            {supabaseEnabled&&(<div className="md:col-span-2">
+              <label htmlFor="poster-input" className="text-xs text-slate-500 dark:text-slate-400 mb-1 block font-medium">Poster (optional · PNG, JPG or WebP, max 2 MB)</label>
+              <input id="poster-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>{ const f=e.target.files?.[0]||null; if (f&&f.size>2*1024*1024){add("Image must be under 2 MB","error");e.target.value="";setPosterFile(null);return;} setPosterFile(f); }} className="block w-full text-sm text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-violet-100 file:text-violet-700 file:font-medium hover:file:bg-violet-200"/>
+              {posterFile&&<img src={URL.createObjectURL(posterFile)} alt="Poster preview" className="mt-2 h-28 rounded-lg object-cover"/>}
+            </div>)}
           </div>
           <button onClick={addEvent} className="bg-violet-600 text-white px-5 py-2 rounded-xl text-sm hover:bg-violet-700 active:scale-95 transition font-medium">Create Event</button>
         </Card>
@@ -1917,6 +1962,7 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   const unreadNotifs = NOTIFICATIONS_DATA.filter(n=>!n.read).length;
   const goToPage = useCallback((p)=>{setPage(p);setSidebarOpen(false);},[]);
   const handleLoginRequired = useCallback(()=>{setScreen("auth");},[]);
+  const { profile: myProfile } = useMyProfile();
   const handleLogout = useCallback(()=>{ if (onLogout) onLogout(); else setScreen("university"); },[onLogout]);
   const idle = useIdleTimeout(screen==="app"&&!isGuest, ()=>{ add("Signed out due to inactivity","info"); handleLogout(); });
 
@@ -1924,7 +1970,7 @@ function AppShell({ session = null, onAuthDone, onLogout }) {
   if (screen==="auth") return <AuthScreen university={selectedUniversity||(supabaseEnabled?{id:null,name:"ClubSphere",logo:"🎓"}:UNIVERSITIES[0])} onAuth={role=>{ if (onAuthDone) onAuthDone(role,false); else {setPortal(role);setIsGuest(false);setScreen("app");setPage("dashboard");} add("Welcome back! 👋"); }} onGuest={()=>{ if (onAuthDone) onAuthDone("student",true); else {setPortal("student");setIsGuest(true);setScreen("app");setPage("dashboard");} add("Browsing as guest","info"); }} onBack={()=>setScreen(session?"app":"university")}/>;
 
   const navItems = NAV[portal];
-  const user = PORTAL_USERS[portal];
+  const user = supabaseEnabled ? { name: myProfile.name||myProfile.email||myProfile.phone||"New user", sub: portal==="student" ? ([myProfile.branch,myProfile.year].filter(Boolean).join(" · ")||"Student") : PORTAL_USERS[portal].sub } : PORTAL_USERS[portal];
   const isTechAdmin = portal==="techAdmin";
   const sidebarBg = isTechAdmin?"bg-slate-900":"bg-indigo-950";
   const sidebarBorder = isTechAdmin?"border-slate-800":"border-indigo-900";
@@ -2041,7 +2087,7 @@ function RootRouter() {
     app: <AppShell key={`${session?.role}-${session?.isGuest}`} session={session} onAuthDone={handleAuthDone} onLogout={handleLogout}/>,
   };
   if (booting) return <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950"><RefreshCw size={20} className="animate-spin text-violet-500" aria-label="Loading"/></div>;
-  return screens[screen] || screens.landing;
+  return <ProfileProvider session={session}>{screens[screen] || screens.landing}</ProfileProvider>;
 }
 
 export default function App() {

@@ -40,7 +40,7 @@ export async function createEventDb(e: Omit<UiEvent, "id" | "registered" | "club
   const club_id = await myClubId();
   const { data, error } = await supabase.from("events").insert({
     club_id, title: e.title, description: e.desc ?? "", category: e.category, date: e.date, time: e.time,
-    venue: e.venue, emoji: e.emoji, spots: e.spots, price: e.price, status: e.status, created_by: u.user?.id,
+    venue: e.venue, emoji: e.emoji, spots: e.spots, price: e.price, status: e.status, created_by: u.user?.id, poster_url: e.poster_url ?? null,
   }).select("*, clubs(name)").single();
   if (error) throw error;
   return mapEvent(data, {});
@@ -397,4 +397,43 @@ export async function removeFollowerDb(studentId: string | number) {
   if (!club) return;
   const { error } = await supabase.from("club_follows").delete().eq("club_id", club.id).eq("student_id", studentId);
   if (error) throw error;
+}
+
+// ── My profile + poster upload ──────────────────────────────────────────────
+export interface MyProfile { name: string; enroll: string; branch: string; year: string; email: string; phone: string; bio: string; interests: string[]; university: string; }
+
+export async function fetchMyProfile(): Promise<MyProfile | null> {
+  if (!supabase) return null;
+  const uid = await currentUserId();
+  if (!uid) return null;
+  const { data } = await supabase.from("profiles").select("*, universities(name)").eq("id", uid).maybeSingle();
+  if (!data) return null;
+  return {
+    name: data.full_name ?? "", enroll: data.enrollment ?? "", branch: data.branch ?? "", year: data.year ?? "",
+    email: data.email ?? "", phone: data.phone ?? "", bio: data.bio ?? "", interests: data.interests ?? [],
+    university: (data as any).universities?.name ?? "",
+  };
+}
+
+export async function saveMyProfile(p: { name: string; enroll: string; branch: string; year: string; bio: string; interests: string[] }) {
+  if (!supabase) return;
+  const uid = await currentUserId();
+  if (!uid) throw new Error("Not signed in");
+  const { error } = await supabase.from("profiles")
+    .update({ full_name: p.name, enrollment: p.enroll, branch: p.branch, year: p.year, bio: p.bio, interests: p.interests }).eq("id", uid);
+  if (error) throw error;
+}
+
+const POSTER_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+export async function uploadPoster(file: File): Promise<string> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const ext = POSTER_TYPES[file.type];
+  if (!ext) throw new Error("Unsupported image type. Use PNG, JPG or WebP.");
+  if (file.size > 2 * 1024 * 1024) throw new Error("Image must be under 2 MB.");
+  const uid = await currentUserId();
+  if (!uid) throw new Error("Not signed in");
+  const path = `${uid}/${crypto.randomUUID()}.${ext}`;
+  const { error } = await supabase.storage.from("event-posters").upload(path, file, { contentType: file.type, upsert: false });
+  if (error) throw error;
+  return supabase.storage.from("event-posters").getPublicUrl(path).data.publicUrl;
 }

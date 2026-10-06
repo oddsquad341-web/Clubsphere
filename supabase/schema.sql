@@ -292,3 +292,18 @@ create policy "profiles club read" on public.profiles for select using (
   or exists (select 1 from public.registrations r join public.events e on e.id = r.event_id join public.clubs c on c.id = e.club_id
           where r.student_id = profiles.id and c.admin_id = auth.uid())
 );
+
+-- ── Batch 6h: profile fields + poster upload scoping ─────────────────────────
+alter table public.profiles add column if not exists branch text;
+alter table public.profiles add column if not exists year text;
+alter table public.profiles add column if not exists bio text;
+alter table public.profiles add column if not exists interests text[] default '{}';
+
+-- posters must be uploaded into the uploader's own folder: <user id>/<file>
+drop policy if exists "posters upload" on storage.objects;
+drop policy if exists "posters delete" on storage.objects;
+create policy "posters upload" on storage.objects for insert with check (
+  bucket_id = 'event-posters' and public.app_role() in ('club','faculty','techAdmin')
+  and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "posters delete" on storage.objects for delete using (
+  bucket_id = 'event-posters' and (storage.foldername(name))[1] = auth.uid()::text);
